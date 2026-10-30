@@ -1,0 +1,22 @@
+# Redis saja. API, worker, dan Ollama berjalan native di host.
+#   docker compose up -d      # jalankan Redis
+#   docker compose logs -f    # lihat log
+#   docker compose down       # berhenti, data antrean tetap ada
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: mydubber-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis_data:

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 240" width="100%" height="100%">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="primaryGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06B6D4" />
+      <stop offset="100%" stop-color="#3B82F6" />
+    </linearGradient>
+    
+    <linearGradient id="accentGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10B981" />
+      <stop offset="100%" stop-color="#06B6D4" />
+    </linearGradient>
+
+    <linearGradient id="darkBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A" />
+      <stop offset="100%" stop-color="#1E293B" />
+    </linearGradient>
+
+    <!-- Filters -->
+    <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="6" flood-color="#000000" flood-opacity="0.25" />
+    </filter>
+  </defs>
+
+  <!-- Background Card for Preview (Optional/Clean Dark Aesthetic) -->
+  <rect width="800" height="240" rx="16" fill="url(#darkBg)" />
+
+  <!-- ICON MARK -->
+  <g transform="translate(40, 40)" filter="url(#softShadow)">
+    <!-- Outer Hex/Circle Shield Boundary -->
+    <rect x="0" y="0" width="160" height="160" rx="32" fill="#1E293B" stroke="#334155" stroke-width="2" />
+    
+    <!-- Video / Audio Pipeline Graphic -->
+    <!-- Soundwave Bars representing Transcribe -> Translate -> Synthesize -->
+    <rect x="36" y="65" width="10" height="30" rx="5" fill="url(#primaryGlow)" />
+    <rect x="54" y="45" width="10" height="70" rx="5" fill="url(#primaryGlow)" />
+    <rect x="72" y="30" width="10" height="100" rx="5" fill="url(#accentGlow)" />
+    <rect x="90" y="50" width="10" height="60" rx="5" fill="url(#primaryGlow)" />
+    <rect x="108" y="70" width="10" height="20" rx="5" fill="url(#primaryGlow)" />
+
+    <!-- Connecting Synchronous / Async Pipeline Nodes -->
+    <path d="M 30 130 Q 80 145 130 130" fill="none" stroke="url(#accentGlow)" stroke-width="4" stroke-linecap="round" stroke-dasharray="6 4" />
+    
+    <!-- Local Offline / Shield Badge Accent -->
+    <circle cx="128" cy="32" r="8" fill="#10B981" />
+  </g>
+
+  <!-- TYPOGRAPHY -->
+  <g transform="translate(230, 135)">
+    <!-- Brand Name -->
+    <text font-family="-apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-weight="800" font-size="64" fill="#F8FAFC" letter-spacing="-1">
+      My<tspan fill="url(#primaryGlow)">Dubber</tspan>
+    </text>
+
+    <!-- Tagline / Subtitle -->
+    <text y="36" font-family="-apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-weight="500" font-size="18" fill="#94A3B8" letter-spacing="0.5">
+      Local, CPU-Only Video Dubbing Engine
+    </text>
+  </g>
+</svg>
