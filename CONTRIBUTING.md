@@ -5,8 +5,9 @@ MyDubber is a local-first, CPU-only video dubbing backend, released under the
 offline operation after installation and the existing asynchronous upload API.
 
 All code, comments, and user-facing messages in this repository are written in
-English. User documentation is available in English ([README.md](README.md)) and
-Indonesian ([README.id.md](README.id.md)).
+English, except for the bilingual dashboard strings in `app/web/app.js`. User
+documentation is available in English ([README.md](README.md)) and Indonesian
+([README.id.md](README.id.md)).
 
 ## Development Setup
 
@@ -17,6 +18,10 @@ requirements:
 ```bash
 python -m pip install -r requirements-dev.txt
 ```
+
+With GNU Make installed, `make setup` performs the same installation and asset
+download, while `make up` and `make down` manage Redis, the API, and the worker.
+Ollama remains external and is never started or stopped by the Makefile.
 
 The commands below assume the virtual environment is active. On Windows, you can
 use `.venv\Scripts\python.exe` instead of `python` without activating it.
@@ -33,6 +38,9 @@ python -m pip check
 Apply formatting with `python -m ruff format .`. Unit tests mock Redis, Ollama,
 Whisper, Piper, and media processing; they do not need running services or model
 downloads. The project targets Python 3.10 and 3.12.
+
+With GNU Make installed, `make test` and `make lint` run the same checks. Use
+`make up` / `make stop` / `make down` for the local stack.
 
 For changes to the dubbing pipeline, run the real integration check using a video
 you have permission to process:

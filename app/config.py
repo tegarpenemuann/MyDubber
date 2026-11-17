@@ -27,9 +27,15 @@ class Settings(BaseSettings):
     whisper_model_dir: Path = PROJECT_ROOT / "models" / "whisper-base"
     piper_model_path: Path = PROJECT_ROOT / "models" / "piper" / "id_ID-news_tts-medium.onnx"
     cpu_threads: int = Field(default=4, ge=1, le=16)
-    max_upload_mb: int = Field(default=500, ge=1)
+    max_upload_mb: int = Field(default=4096, ge=1)
+    max_media_hours: float = Field(default=6.0, gt=0)
     ollama_timeout: float = Field(default=300, gt=0)
-    ffmpeg_timeout: float = Field(default=1800, gt=0)
+    ffmpeg_timeout: float = Field(default=7200, gt=0)
+    translation_batch_chars: int = Field(default=700, ge=0)
+    translation_batch_segments: int = Field(default=8, ge=1)
+    translation_retries: int = Field(default=3, ge=1)
+    progress_min_interval: float = Field(default=5.0, ge=0)
+    task_visibility_timeout: int = Field(default=43200, ge=60)
     result_expires: int = Field(default=86400, ge=60)
     ffmpeg_binary: str = Field(default_factory=lambda: local_binary("ffmpeg"))
     ffprobe_binary: str = Field(default_factory=lambda: local_binary("ffprobe"))
@@ -57,8 +63,17 @@ class Settings(BaseSettings):
     def outputs_dir(self) -> Path:
         return self.storage_dir / "outputs"
 
+    @property
+    def tasks_dir(self) -> Path:
+        return self.storage_dir / "tasks"
+
     def ensure_directories(self) -> None:
-        for directory in (self.uploads_dir, self.temp_dir, self.outputs_dir):
+        for directory in (
+            self.uploads_dir,
+            self.temp_dir,
+            self.outputs_dir,
+            self.tasks_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
 
 

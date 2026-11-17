@@ -1,20 +1,25 @@
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, status
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi import Path as PathParameter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app import task_store
 from app.celery_utils import celery_app
 from app.config import PROJECT_ROOT, settings
+from app.events import broker
 from app.tasks import dub_video
 
 logger = logging.getLogger(__name__)
+WEB_DIR = PROJECT_ROOT / "app" / "web"
 
 
 class HealthCheckAccessFilter(logging.Filter):
@@ -29,13 +34,30 @@ class HealthCheckAccessFilter(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(HealthCheckAccessFilter())
 settings.ensure_directories()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    task_store.prune_tasks()
+    yield
+    await broker.stop()
+
+
 app = FastAPI(
     title="MyDubber API",
     version="1.0.0",
+    lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
     description=f"""
-Backend for automatic MP4 dubbing into Bahasa Indonesia, processed asynchronously on the CPU.
+Local web app and backend for automatic MP4 dubbing into Bahasa Indonesia, processed asynchronously on the CPU.
+
+## Web Dashboard
+
+Open `/` in a browser for the dashboard. It supports drag-and-drop uploads,
+live progress over Server-Sent Events (`GET /api/v1/dubbing/events`), persistent
+history, play/download, and Indonesian or English themes. No build step or CDN is
+involved; assets are served from `/assets`.
 
 ## Try It Directly in Swagger
 
@@ -43,10 +65,16 @@ Backend for automatic MP4 dubbing into Bahasa Indonesia, processed asynchronousl
     Ollama with the `llama3.2` model (`ollama pull llama3.2`), the Celery worker,
     FFmpeg/FFprobe, the local Whisper base model, and the local Piper Indonesian
     voice. Verify everything at once with `python -m scripts.prepare_local`.
+    With GNU Make installed, `make up` starts Redis, the API, and the worker while
+    keeping Ollama external; `make doctor` checks the prerequisites.
     All processing and Swagger assets run locally without internet.
 2. Open **POST /api/v1/dubbing/tasks**, click **Try it out**, choose an MP4
     that contains speech, then click **Execute**. Current upload limit:
-    **{settings.max_upload_mb} MiB**.
+    **{settings.max_upload_mb} MiB** and current duration limit:
+    **{settings.max_media_hours:g} hours**. Long videos such as a two-hour
+    recording are supported, but they take a long time to process and need
+    free disk space for the original video, the temporary timeline, and the
+    result.
 3. Copy the `task_id` from the **202** response. This means the task is queued,
     not that dubbing has finished.
 4. Open **GET /api/v1/dubbing/tasks/{{task_id}}**, click **Try it out**, paste the
@@ -61,7 +89,7 @@ Backend for automatic MP4 dubbing into Bahasa Indonesia, processed asynchronousl
 | --- | --- |
 | PENDING | An uploaded task is waiting for a worker |
 | STARTED | A worker has started processing |
-| PROGRESS | Milestone: 10 extract, 30 STT, 60 translate, 80 TTS, 100 merge |
+| PROGRESS | Milestone: 10 extract, 10-29 transcribe, 30-59 translate, 60-79 synthesize, 80 merge |
 | SUCCESS | The result is ready at `download_url` |
 | FAILURE / REVOKED | Failed or cancelled; check the worker log |
 
@@ -94,6 +122,16 @@ app.mount(
     StaticFiles(directory=str(PROJECT_ROOT / "tools" / "swagger"), check_dir=False),
     name="docs-assets",
 )
+app.mount("/assets", StaticFiles(directory=str(WEB_DIR)), name="assets")
+
+
+@app.get("/", include_in_schema=False)
+def dashboard():
+    return FileResponse(
+        WEB_DIR / "index.html",
+        media_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/docs", include_in_schema=False)
@@ -120,8 +158,8 @@ class TaskStatus(BaseModel):
     progress: int = Field(description="Milestone from 0 to 100, not a time estimate.")
     stage: str = Field(
         description=(
-            "queued, processing, extracted, transcribed, translated, synthesized, "
-            "completed, or failed."
+            "queued, processing, extracted, transcribing, transcribed, translating, "
+            "translated, synthesizing, synthesized, completed, or failed."
         )
     )
     download_url: str | None = Field(
@@ -134,6 +172,77 @@ class TaskStatus(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str = Field(description="Explanation of the request or service error.")
+
+
+class TaskSummary(BaseModel):
+    task_id: str
+    filename: str
+    size_bytes: int
+    created_at: str
+    updated_at: str
+    status: str
+    progress: int
+    stage: str
+    download_url: str | None = None
+    error: str | None = None
+
+
+class TaskList(BaseModel):
+    tasks: list[TaskSummary]
+    active: int
+    server_time: str
+
+
+class DubbingConfig(BaseModel):
+    max_upload_mb: int
+    max_media_hours: float
+    accepted_format: str = ".mp4"
+
+
+@app.get(
+    "/api/v1/dubbing/config",
+    tags=["Dubbing"],
+    summary="Read the upload limits used by the dashboard",
+)
+def read_dubbing_config() -> DubbingConfig:
+    return DubbingConfig(
+        max_upload_mb=settings.max_upload_mb,
+        max_media_hours=settings.max_media_hours,
+    )
+
+
+@app.get(
+    "/api/v1/dubbing/tasks",
+    tags=["Dubbing"],
+    summary="List recent tasks for the dashboard",
+    description=(
+        "Returns persisted task metadata, active tasks first. The dashboard uses "
+        "this for its initial render and to resynchronize after a reconnect."
+    ),
+)
+def list_dubbing_tasks(
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> TaskList:
+    tasks = task_store.list_tasks(limit)
+    return TaskList(
+        tasks=[TaskSummary(**task) for task in tasks],
+        active=sum(1 for task in tasks if task.get("status") in task_store.ACTIVE_STATUSES),
+        server_time=task_store.iso_timestamp(),
+    )
+
+
+@app.get("/api/v1/dubbing/events", include_in_schema=False)
+async def stream_dubbing_events(request: Request) -> StreamingResponse:
+    broker.start()
+    return StreamingResponse(
+        broker.stream(request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post(
@@ -182,9 +291,16 @@ def create_dubbing_task(
     if Path(file.filename or "").suffix.lower() != ".mp4":
         file.file.close()
         raise HTTPException(status_code=415, detail="The upload must be an .mp4 video.")
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    if file.size is not None:
+        if file.size > max_bytes:
+            file.file.close()
+            raise HTTPException(status_code=413, detail="The video exceeds the upload limit.")
+        if file.size == 0:
+            file.file.close()
+            raise HTTPException(status_code=400, detail="The video file is empty.")
     task_id = str(uuid4())
     destination = settings.uploads_dir / f"{task_id}.mp4"
-    max_bytes = settings.max_upload_mb * 1024 * 1024
     try:
         size = 0
         with destination.open("xb") as output:
@@ -197,10 +313,12 @@ def create_dubbing_task(
                 output.write(chunk)
         if size == 0:
             raise HTTPException(status_code=400, detail="The video file is empty.")
+        task_store.create_task(task_id, file.filename, size)
         try:
             dub_video.apply_async(args=[task_id], task_id=task_id, retry=False)
         except Exception as exc:
             logger.exception("Could not enqueue task %s", task_id)
+            task_store.delete_task(task_id)
             raise HTTPException(
                 status_code=503, detail="The Redis queue is not available."
             ) from exc
@@ -211,6 +329,57 @@ def create_dubbing_task(
         file.file.close()
     return TaskCreated(
         task_id=task_id, status="PENDING", status_url=f"/api/v1/dubbing/tasks/{task_id}"
+    )
+
+
+@app.post(
+    "/api/v1/dubbing/tasks/{task_id}/retry",
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["Dubbing"],
+    summary="Requeue a failed or interrupted dubbing task from its checkpoints",
+    responses={
+        202: {"description": "The task was requeued."},
+        404: {"model": ErrorResponse, "description": "The uploaded video is no longer available."},
+        409: {"model": ErrorResponse, "description": "The task is already finished."},
+        503: {"model": ErrorResponse, "description": "The Redis queue is not available."},
+    },
+)
+def retry_dubbing_task(
+    task_id: Annotated[
+        UUID,
+        PathParameter(description="The task_id to requeue."),
+    ],
+) -> TaskCreated:
+    identifier = str(task_id)
+    if (settings.outputs_dir / f"{identifier}.mp4").is_file():
+        raise HTTPException(status_code=409, detail="The dubbing task has already completed.")
+    source = settings.uploads_dir / f"{identifier}.mp4"
+    if not source.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="The uploaded video is no longer available to retry. Upload it again.",
+        )
+    record = task_store.get_task(identifier)
+    previous_status = record.get("status", "FAILURE") if record else "FAILURE"
+    previous_stage = record.get("stage", "failed") if record else "failed"
+    previous_error = record.get("error") if record else None
+    if record is None:
+        task_store.create_task(identifier, source.name, source.stat().st_size)
+    else:
+        task_store.update_task(identifier, status="PENDING", stage="queued", error=None)
+    try:
+        dub_video.apply_async(args=[identifier], task_id=identifier, retry=False)
+    except Exception as exc:
+        logger.exception("Could not requeue task %s", identifier)
+        task_store.update_task(
+            identifier,
+            status=previous_status,
+            stage=previous_stage,
+            error=previous_error,
+        )
+        raise HTTPException(status_code=503, detail="The Redis queue is not available.") from exc
+    return TaskCreated(
+        task_id=identifier, status="PENDING", status_url=f"/api/v1/dubbing/tasks/{identifier}"
     )
 
 

@@ -27,8 +27,9 @@ Indonesia.
 Semua berjalan di komputer Anda sendiri. Tanpa akun, tanpa API key, tanpa
 mengunggah video ke layanan cloud, dan tanpa GPU.
 
-> **Ini adalah backend service, bukan aplikasi desktop.** Anda memakainya lewat
-> halaman web bernama Swagger UI, atau lewat `curl`. Tidak ada halaman login.
+> **Ini adalah aplikasi web lokal sekaligus API HTTP.** Buka dashboard di
+> **http://127.0.0.1:8000/** untuk mengunggah, memantau progres, dan memutar
+> hasil, atau pakai Swagger UI di **/docs** dan `curl`. Tidak ada halaman login.
 
 ## Daftar isi
 
@@ -36,7 +37,9 @@ mengunggah video ke layanan cloud, dan tanpa GPU.
 - [Fitur](#fitur)
 - [Cara kerjanya](#cara-kerjanya)
 - [Demo: video pendek Inggris ke dubbing Indonesia](#demo-video-pendek-inggris-ke-dubbing-indonesia)
+- [Video berdurasi panjang](#video-berdurasi-panjang)
 - [Mulai cepat](#mulai-cepat)
+- [Dashboard web](#dashboard-web)
 - [Menghentikan](#menghentikan)
 - [Glosarium istilah](#glosarium-istilah)
 - [Konfigurasi](#konfigurasi)
@@ -67,12 +70,17 @@ pihak ketiga.
 ## Fitur
 
 - Unggah MP4 dan langsung dapat `task_id`. Proses berjalan di latar belakang.
+- Mendukung rekaman panjang: video dua jam dapat diproses, dengan batas yang bisa diatur sampai enam jam.
 - Pengenalan ucapan dengan faster-whisper `base`, CPU, INT8.
-- Penerjemahan lokal dengan Ollama dan model `llama3.2`, GPU dimatikan.
+- Penerjemahan lokal dengan Ollama dan model `llama3.2`, GPU dimatikan dan dibatch untuk transkrip panjang.
 - Sintesis suara Indonesia dengan voice Piper `id_ID-news_tts-medium`.
-- Ucapan disesuaikan dengan timing segmen asli, jadi dubbing tetap sinkron dengan gambar.
+- Ucapan disesuaikan dengan timing segmen asli memakai `length_scale` Piper, jadi dubbing tetap sinkron dengan gambar.
+- Checkpoint membuat task yang terputus bisa dilanjutkan tanpa mengulang transkripsi dan batch terjemahan yang sudah selesai.
 - Video stream disalin dengan FFmpeg (`-c:v copy`), jadi tidak di-render ulang.
 - Progres per milestone, hasil bisa diunduh, dan dukungan HTTP Range untuk video player.
+- Dashboard lokal dengan upload drag-and-drop beberapa file, progres langsung
+  lewat Server-Sent Events, riwayat yang tersimpan, play/download, serta tema
+  terang atau gelap dalam Bahasa Indonesia dan Inggris.
 - Bekerja sepenuhnya offline setelah unduhan aset sekali saja.
 
 ```text
@@ -87,14 +95,19 @@ Proses **worker** mengambil pekerjaan itu dan menjalankan lima langkah:
 | Progres | Stage | Yang terjadi |
 | --- | --- | --- |
 | 10% | `extracted` | FFmpeg mengekstrak audio menjadi WAV mono 16 kHz. |
-| 30% | `transcribed` | Whisper mengubah ucapan menjadi teks beserta timestamp. |
-| 60% | `translated` | Ollama menerjemahkan setiap segmen ke Bahasa Indonesia. |
-| 80% | `synthesized` | Piper mengucapkan setiap segmen dalam Bahasa Indonesia, lalu segmen disusun menjadi satu trek audio. |
+| 10–29% | `transcribing` | Whisper mengubah ucapan menjadi teks beserta timestamp. |
+| 30% | `transcribed` | Transkrip disimpan sebagai checkpoint. |
+| 30–59% | `translating` | Ollama menerjemahkan segmen secara batch ke Bahasa Indonesia. |
+| 60% | `translated` | Setiap segmen sudah punya terjemahan Bahasa Indonesia. |
+| 60–79% | `synthesizing` | Piper mengucapkan setiap segmen dan timeline disusun pada sample rate voice. |
+| 80% | `synthesized` | Timeline dubbing sudah sama persis dengan durasi video. |
 | 100% | `completed` | FFmpeg menggabungkan video asli dengan audio baru dan menerbitkan hasilnya. |
 
-Progres berbasis **milestone**. Ini bukan perkiraan waktu, dan bisa melompat dari
-30 langsung ke 60. Penerjemahan berjalan saat progres masih 30%; sintesis suara
-berjalan saat masih 60%. Angka yang belum berubah tidak selalu berarti task macet.
+Progres berbasis **milestone** dengan persentase di dalam tahap. Ini bukan
+perkiraan waktu, jadi angkanya bisa tidak berubah untuk sementara saat tahap
+panjang berjalan. Perubahan tahap selalu memperbarui progres; pembaruan di
+tengah tahap dibatasi menjadi satu setiap beberapa detik agar Redis tidak
+dibanjiri.
 
 ## Demo: video pendek Inggris ke dubbing Indonesia
 
@@ -121,13 +134,78 @@ Waktu proses bergantung pada CPU, kepadatan ucapan, pemuatan model, dan panjang
 video. Penerjemahan di CPU dapat lebih lama daripada tahap lain; tidak ada
 jaminan waktu selesai yang tetap.
 
+## Video berdurasi panjang
+
+Rekaman dua jam didukung di CPU. Perhatikan hal-hal berikut:
+
+- Batas durasi default adalah **6 jam** (`MYDUBBER_MAX_MEDIA_HOURS`). File yang
+  lebih panjang langsung gagal dengan pesan yang jelas.
+- Batas upload default adalah **4096 MiB**. Naikkan `MYDUBBER_MAX_UPLOAD_MB` di
+  `.env` untuk file yang lebih besar; API dan worker harus memakai nilai yang
+  sama.
+- Perkirakan sekitar **1–1,5 jam** pemrosesan untuk video 1080p dua jam pada CPU
+  4 thread dengan model Whisper base. Ini perkiraan, bukan jaminan.
+- Ruang disk kosong di drive penyimpanan minimal **dua kali ukuran video ditambah
+  0,35 GB per jam video** untuk timeline sementara. Upload terlebih dahulu
+  ditampung di temporary directory sistem, jadi drive tersebut juga butuh ruang
+  kosong.
+- Worker harus tetap berjalan selama seluruh proses. Pekerjaan dua jam tidak
+  atomik: jika worker berhenti, upload dan checkpoint JSON disimpan selama
+  `MYDUBBER_RESULT_EXPIRES` detik (default 24 jam).
+- Setelah gagal, masukkan ulang **task ID yang sama** alih-alih mengunggah lagi.
+  Transkripsi dan batch terjemahan yang sudah selesai akan dipakai ulang, dan
+  sintesis dimulai dari timeline terakhir yang selesai.
+
+Masukkan ulang task yang gagal dari folder proyek saat Redis dan worker
+berjalan:
+
+```bash
+python -c "from app.tasks import dub_video; dub_video.apply_async(args=['<task_id>'], task_id='<task_id>', retry=False)"
+```
+
+Status API untuk task tersebut akan berubah dari `FAILURE` kembali ke `PROGRESS`.
+Upload dan checkpoint lama yang tidak pernah dimasukkan ulang akan dihapus
+otomatis setelah `MYDUBBER_RESULT_EXPIRES` detik.
+
 ## Mulai cepat
 
 Yang dibutuhkan: Docker Desktop, Ollama dengan model `llama3.2`, Python 3.10+,
-dan FFmpeg (di Windows dipasang otomatis). Disarankan RAM 16 GB dan disk ±3 GB.
+dan FFmpeg (di Windows dipasang otomatis). GNU Make opsional dan mengaktifkan
+perintah cepat di bawah. Disarankan RAM 16 GB dan disk ±3 GB.
 
 Langkah 1–3 hanya sekali per komputer. Langkah 4–7 diulang setiap kali memakai
 MyDubber.
+
+### Cara cepat dengan Make
+
+Jika GNU Make sudah terpasang, dua perintah menggantikan langkah 1–6:
+
+```bash
+make setup   # sekali: buat .venv, install dependensi, salin .env, unduh aset
+make up      # nyalakan Redis, API, dan worker
+```
+
+Docker Desktop harus berjalan. Ollama tidak pernah dinyalakan atau dimatikan oleh
+target ini, jadi instans host eksternal dipakai langsung. `make up` mencetak URL
+Swagger dan menulis log API serta worker ke `storage/logs/`.
+
+| Perintah | Fungsi |
+| --- | --- |
+| `make setup` | Buat `.venv`, install dependensi, salin `.env.example`, unduh model dan tools. |
+| `make up` | Nyalakan Redis, API, dan worker di background. |
+| `make stop` | Hentikan API dan worker; Redis tetap berjalan. |
+| `make down` | Hentikan API, worker, dan Redis. Volume Redis dan hasil tetap disimpan. |
+| `make status` | Tampilkan status proses, API, Redis, dan Ollama. |
+| `make doctor` | Periksa prasyarat, aset lokal, port, dan Ollama. |
+| `make logs` | Ikuti log API dan worker; `make logs-api` atau `make logs-worker` untuk satu proses. |
+| `make test` / `make lint` | Jalankan unit test atau pemeriksaan gaya kode. |
+| `make e2e VIDEO=/path/to/video.mp4` | Jalankan integration test dengan video asli. |
+
+Gunakan `make up PORT=8001` jika port 8000 dipakai, dan `make logs LINES=200`
+untuk riwayat lebih banyak. Menghentikan stack saat dubbing berjalan akan
+memutus task tersebut; upload dan checkpoint JSON tetap disimpan untuk requeue.
+
+Langkah manual di bawah melakukan hal yang sama tanpa Make.
 
 ### 1. Pasang Docker
 
@@ -250,7 +328,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 Tanda siap: `Uvicorn running on http://127.0.0.1:8000`. Buka
-**http://127.0.0.1:8000/docs** di browser; itulah Swagger UI.
+**http://127.0.0.1:8000/** untuk dashboard, atau
+**http://127.0.0.1:8000/docs** untuk Swagger UI.
 
 > Port terpakai? Ganti `--port 8000` menjadi `--port 8001`, lalu buka
 > `http://127.0.0.1:8001/docs`.
@@ -265,6 +344,10 @@ di `/docs`. Respons `/openapi.json` yang berhasil saja tidak membuktikan
 JavaScript dan CSS Swagger sudah siap. Sesuaikan port pada URL jika diubah.
 
 ### 7. Dubbing video pertama
+
+Dashboard di **http://127.0.0.1:8000/** adalah cara termudah: tarik MP4 ke drop
+zone dan lihat setiap tahap diperbarui langsung. Alur Swagger di bawah setara
+dengan versi API saja.
 
 1. Buka **http://127.0.0.1:8000/docs**.
 2. Buka **POST /api/v1/dubbing/tasks** → **Try it out** → pilih file MP4 →
@@ -304,18 +387,52 @@ Di Windows PowerShell, gunakan `curl.exe` alih-alih `curl`.
 | `SUCCESS` | Selesai; `download_url` tersedia. |
 | `FAILURE` / `REVOKED` | Gagal atau dibatalkan; periksa log worker. |
 
-Progres berbasis milestone (10 ekstrak, 30 transkrip, 60 terjemah, 80 sintesis,
-100 gabung), bukan perkiraan waktu.
+Progres berbasis milestone (10 ekstrak, 10–29 transkrip, 30–59 terjemah, 60–79
+sintesis, 80 gabung), bukan perkiraan waktu.
 
 ### Error saat upload
 
 | Kode | Arti |
 | --- | --- |
 | `400` | File kosong. |
-| `413` | Melebihi batas upload (default 500 MiB). |
+| `413` | Melebihi batas upload (default 4096 MiB). |
 | `415` | Ekstensi bukan `.mp4`. |
 | `422` | Request tidak valid, atau `task_id` bukan UUID. |
 | `503` | Redis tidak bisa dihubungi. |
+
+## Dashboard web
+
+Dashboard disajikan oleh proses FastAPI yang sama di
+**http://127.0.0.1:8000/** (atau `make open`). Isinya HTML, CSS, dan JavaScript
+biasa tanpa langkah build dan tanpa CDN, jadi tetap bekerja offline seperti
+bagian aplikasi lainnya.
+
+- Tarik satu atau beberapa file MP4 ke drop zone. Upload dikirim satu per satu
+  dan setiap file punya progres upload sendiri.
+- Task yang menunggu dan berjalan diperbarui langsung lewat Server-Sent Events.
+  Daftar dipulihkan dari disk saat halaman atau API dijalankan ulang.
+- Filter task aktif, selesai, atau gagal, lalu cari berdasarkan nama file.
+- Task yang selesai bisa diputar di dialog atau diunduh tanpa meninggalkan
+  halaman.
+- Antarmuka dua bahasa. Bahasa mengikuti browser (`id` menjadi Bahasa Indonesia,
+  selain itu Inggris) dan pilihan bahasa serta tema terang/gelap diingat di
+  `localStorage`.
+
+Dashboard memakai endpoint berikut:
+
+| Endpoint | Fungsi |
+| --- | --- |
+| `GET /api/v1/dubbing/config` | Batas ukuran upload dan durasi yang ditampilkan di UI. |
+| `GET /api/v1/dubbing/tasks?limit=50` | Metadata task tersimpan, yang aktif lebih dulu. |
+| `GET /api/v1/dubbing/events` | Stream SSE snapshot task (`tasks`) dan heartbeat 15 detik (`ping`). Tidak muncul di OpenAPI. |
+| `POST /api/v1/dubbing/tasks` | Upload dan masukkan task ke antrean. |
+| `GET /api/v1/dubbing/tasks/{task_id}` | Polling satu task. |
+| `GET /outputs/{task_id}.mp4` | Putar atau unduh hasil. |
+
+Metadata task disimpan di `storage/tasks/<task_id>.json` dan ditulis secara
+atomik oleh API maupun worker. Maksimal 200 catatan disimpan, dan catatan tanpa
+hasil dihapus setelah `MYDUBBER_RESULT_EXPIRES`. Video hasil tetap berada di
+`storage/outputs/`.
 
 ## Menghentikan
 
@@ -400,10 +517,16 @@ Tabel berikut menjelaskan semua pengaturan aplikasi:
 | `MYDUBBER_WHISPER_MODEL_DIR` | `./models/whisper-base` | Folder model Whisper lokal. |
 | `MYDUBBER_PIPER_MODEL_PATH` | `./models/piper/id_ID-news_tts-medium.onnx` | Voice Piper lokal. |
 | `MYDUBBER_CPU_THREADS` | `4` | Pengaturan thread FFmpeg, Whisper, dan Ollama. Rentang 1–16; tidak mengatur sesi ONNX Piper. |
-| `MYDUBBER_MAX_UPLOAD_MB` | `500` | Batas upload dalam MiB. |
-| `MYDUBBER_RESULT_EXPIRES` | `86400` | Berapa lama metadata tugas disimpan di Redis, dalam detik. |
+| `MYDUBBER_MAX_UPLOAD_MB` | `4096` | Batas upload dalam MiB. |
+| `MYDUBBER_MAX_MEDIA_HOURS` | `6` | Durasi video maksimum yang diterima, dalam jam. |
+| `MYDUBBER_RESULT_EXPIRES` | `86400` | Berapa lama metadata tugas disimpan di Redis, dan berapa lama upload/checkpoint yang gagal disimpan, dalam detik. |
 | `MYDUBBER_OLLAMA_TIMEOUT` | `300` | Timeout per request penerjemahan, dalam detik. |
-| `MYDUBBER_FFMPEG_TIMEOUT` | `1800` | Timeout per panggilan FFmpeg/FFprobe, dalam detik. |
+| `MYDUBBER_FFMPEG_TIMEOUT` | `7200` | Timeout per panggilan FFmpeg/FFprobe, dalam detik. |
+| `MYDUBBER_TRANSLATION_BATCH_CHARS` | `700` | Maksimum karakter transkrip per request Ollama. Set `0` untuk menerjemahkan satu segmen per request. |
+| `MYDUBBER_TRANSLATION_BATCH_SEGMENTS` | `8` | Maksimum segmen per request Ollama. |
+| `MYDUBBER_TRANSLATION_RETRIES` | `3` | Jumlah percobaan per request penerjemahan sebelum task gagal. |
+| `MYDUBBER_PROGRESS_MIN_INTERVAL` | `5` | Jarak minimum dalam detik antar pembaruan progres di dalam tahap. |
+| `MYDUBBER_TASK_VISIBILITY_TIMEOUT` | `43200` | Visibility timeout broker Redis. Harus lebih besar dari task terlama. |
 | `MYDUBBER_FFMPEG_BINARY` | otomatis | Menimpa path executable FFmpeg. |
 | `MYDUBBER_FFPROBE_BINARY` | otomatis | Menimpa path executable FFprobe. |
 | `MYDUBBER_CORS_ORIGINS` | `["http://localhost:3000","http://localhost:5173"]` | Origin browser yang diizinkan, sebagai array JSON. |
@@ -427,7 +550,7 @@ koneksi ke host non-loopback, jadi Redis dan Ollama harus berjalan di `localhost
 | --- | --- |
 | Voice ID | `id_ID-news_tts-medium` |
 | Bahasa | Indonesia (`id_ID`), satu speaker |
-| Kualitas | medium, 22.050 Hz (pipeline me-resample ke 16 kHz mono) |
+| Kualitas | medium, 22.050 Hz (dipakai langsung untuk timeline dubbing) |
 | Phonemizer | eSpeak NG, voice `id`, berjalan lokal |
 | Data latih | `news_tts`. Model card menautkan dataset dan menulis "License: See URL". |
 | Lisensi repository | Repository Piper voices menyatakan MIT. Ketentuan dataset bisa berbeda. |
@@ -473,7 +596,8 @@ Gunakan klip bahasa Inggris pendek milik Anda. Test ini memeriksa:
 - request HTTP Range mengembalikan `206`,
 - file upload dan file kerja sementara dihapus.
 
-Laporan disimpan di `storage/e2e-report.json`.
+Timeout tunggu dihitung otomatis dari durasi video secara default. Gunakan
+`--timeout` untuk menimpanya. Laporan disimpan di `storage/e2e-report.json`.
 
 ## Penggunaan offline
 
@@ -542,25 +666,40 @@ folder model miliknya sendiri, di luar repository ini.
 | Celery gagal di Windows | Pool default tidak didukung. | Gunakan `--pool=solo` seperti contoh di atas. |
 | Run pertama sangat lambat | Model sedang dimuat untuk pertama kali. | Tunggu. Run berikutnya memakai model yang sudah dimuat. |
 | Output tidak bisa diputar di beberapa player | `-c:v copy` mempertahankan codec yang tidak didukung player tersebut. | Gunakan MP4 H.264/AAC standar. |
+| `make: command not found` | GNU Make belum terpasang. | Ikuti langkah manual di [Mulai cepat](#mulai-cepat), atau pasang Make (misalnya `choco install make`). |
+| `make up` bilang Docker belum siap | Docker Desktop mati atau masih starting. | Buka Docker Desktop, tunggu sampai running, lalu jalankan `make up` lagi. |
+| `make up` bilang port 8000 dipakai | Ada API atau program lain di port itu. | Hentikan program tersebut, atau jalankan `make up PORT=8001` lalu buka URL baru. |
+| `make up` memperingatkan Ollama tidak bisa dihubungi | Service Ollama eksternal belum berjalan. | Buka aplikasi Ollama atau jalankan `ollama serve`; unduh model dengan `ollama pull llama3.2`. |
+| `make stop` tidak menghentikan proses | Proses dijalankan manual, di luar Makefile. | Hentikan di terminal asalnya, atau lewat Task Manager / `taskkill`. |
+| Task panjang lama tertahan di 30% | Penerjemahan transkrip besar berat di CPU. | Tunggu, atau kurangi rebutan `MYDUBBER_CPU_THREADS` dengan menutup program lain. Periksa log worker untuk peringatan per batch. |
+| Task panjang gagal setelah worker restart | Pekerjaan terputus, bukan dibatalkan. | Jalankan ulang Redis dan worker, lalu masukkan ulang task ID yang sama seperti di [Video berdurasi panjang](#video-berdurasi-panjang). |
+| Video panjang mengembalikan `413` | File melebihi `MYDUBBER_MAX_UPLOAD_MB`. | Naikkan nilainya di `.env` untuk API dan worker. |
+| "Not enough free disk space" | Drive penyimpanan tidak cukup untuk upload plus timeline sementara. | Kosongkan ruang, pindahkan `MYDUBBER_STORAGE_DIR` ke drive lain, atau perpendek video. |
+| "configured limit is 6.0 hours" | Penjaga durasi menolak video. | Naikkan `MYDUBBER_MAX_MEDIA_HOURS` jika mesin mampu. |
 
 ## Batasan dan keamanan
 
 - **Hanya untuk penggunaan lokal yang tepercaya.** Tidak ada autentikasi, rate
-  limiting, batas durasi, atau kuota penyimpanan. Jangan mengekspos API, Redis,
-  atau Ollama ke internet.
+  limiting, atau kuota penyimpanan. Hanya batas durasi yang bisa diatur
+  (`MYDUBBER_MAX_MEDIA_HOURS`) yang menjaga pemakaian sumber daya. Jangan
+  mengekspos API, Redis, atau Ollama ke internet.
 - CORS bukan kontrol akses.
-- Batas upload diperiksa setelah multipart diurai. Tambahkan batas ukuran body
-  di proxy jika Anda menaruh proxy di depan API.
+- Ukuran upload diperiksa sedini mungkin, tetapi FastAPI tetap menampung body
+  multipart ke temporary directory sistem sebelum API membacanya. Tambahkan batas
+  ukuran body di proxy jika Anda menaruh proxy di depan API.
 - Audio asli diganti, termasuk musik latar. Tidak ada voice cloning, diarisasi
   pembicara, pemisahan latar, atau lip-sync.
 - Ucapan bisa dipercepat atau ditambah jeda agar sesuai timestamp asli.
   Terjemahan dan istilah teknis perlu diperiksa manusia.
 - Codec MP4 yang tidak kompatibel bisa membuat penggabungan video gagal.
-- File upload dan file sementara dihapus setelah sukses atau gagal. Jika worker
-  dimatikan paksa, file atau tugas bisa tertinggal di status `STARTED`.
+- Task yang sukses menghapus upload dan file sementaranya. Task yang gagal
+  menyimpan upload dan checkpoint JSON sampai `MYDUBBER_RESULT_EXPIRES` habis,
+  supaya bisa dimasukkan ulang. Jika worker dimatikan paksa, file atau tugas bisa
+  tertinggal di status `STARTED`.
 - Hasil tetap tersimpan di disk sampai Anda menghapusnya. Metadata tugas
   kedaluwarsa setelah 24 jam secara default, tetapi file videonya tidak.
-- Tugas tidak diulang otomatis. Periksa log worker setelah `FAILURE`.
+- Tugas tidak diulang otomatis. Masukkan ulang task ID yang sama setelah
+  memeriksa log worker; checkpoint yang sudah selesai akan dipakai ulang.
 - Biarkan concurrency di 1 pada mesin dengan RAM terbatas. Whisper dan Piper
   di-cache per proses worker, dan Ollama menyimpan model selama lima menit.
 
@@ -568,18 +707,29 @@ folder model miliknya sendiri, di luar repository ini.
 
 ```text
 app/
-  main.py           Aplikasi FastAPI, endpoint upload dan status
+  main.py           Aplikasi FastAPI, dashboard, endpoint upload, daftar, dan status
   config.py         Pengaturan dengan prefix MYDUBBER_
   celery_utils.py   Broker dan result backend Celery
   offline.py        Kebijakan jaringan loopback-only
-  tasks.py          Pipeline dubbing lima tahap
+  tasks.py          Pipeline dubbing, checkpoint, dan pelaporan progres
+  task_store.py     Registry task JSON atomik yang dipakai API dan worker
+  events.py         Broker Server-Sent Events untuk pembaruan dashboard
+  web/
+    index.html      Markup dashboard
+    styles.css      Tema studio gelap dan terang
+    app.js          Antrean upload, klien SSE, i18n, dan logika player
 scripts/
+  dev.py            Helper start, stop, status, dan log untuk Makefile
   prepare_local.py  Unduhan aset sekali jalan dan verifikasi lokal
   test_local.py     Integration test dengan media asli
 tests/
   test_backend.py   Unit test dan test kontrak API
+  test_task_store.py  Test registry task dan pemangkasan
+  test_events.py    Test format SSE dan broker
+  test_dev_script.py  Test untuk helper developer
 docs/
   logo.svg          Logo proyek
+Makefile            Start dan stop Redis, API, dan worker dengan satu perintah
 docker-compose.yml  Satu service: Redis untuk antrean dan metadata tugas
 ```
 

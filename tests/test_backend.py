@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import socket
 import tempfile
 import unittest
@@ -10,23 +11,53 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import httpx
+import numpy as np
 from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import HealthCheckAccessFilter, app
 from app.tasks import (
+    ProgressReporter,
+    assert_media_limits,
+    cleanup_stale_artifacts,
     dub_video,
     ffmpeg,
+    media_duration,
+    parse_numbered_translation,
     piper_voice,
     probe_media,
     run_process,
     synthesize,
-    tempo_filter,
+    timeline_sample_rate,
+    transcribe,
     translate_segments,
     whisper_model,
     write_silence,
 )
 from scripts.prepare_local import download
+
+
+def ollama_response(text: str, done_reason: str = "stop") -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"response": text, "done_reason": done_reason},
+        request=httpx.Request("POST", "http://localhost"),
+    )
+
+
+class FakeVoice:
+    """Synthesize deterministic audio without loading the real Piper model."""
+
+    def __init__(self, seconds: float = 1.0, sample_rate: int = 22050) -> None:
+        self.config = SimpleNamespace(sample_rate=sample_rate)
+        self.seconds = seconds
+        self.length_scales: list[float] = []
+
+    def synthesize(self, text: str, syn_config=None):
+        scale = syn_config.length_scale if syn_config and syn_config.length_scale else 1.0
+        self.length_scales.append(scale)
+        frames = max(1, round(self.seconds * scale * self.config.sample_rate))
+        yield SimpleNamespace(audio_int16_array=np.full(frames, 1000, dtype=np.int16))
 
 
 class PrepareLocalTests(unittest.TestCase):
@@ -58,6 +89,9 @@ class BackendTests(unittest.TestCase):
         self.settings_patch = patch("app.main.settings", self.settings)
         self.settings_patch.start()
         self.addCleanup(self.settings_patch.stop)
+        self.store_patch = patch("app.task_store.settings", self.settings)
+        self.store_patch.start()
+        self.addCleanup(self.store_patch.stop)
         self.client = TestClient(app)
 
     @patch("app.main.dub_video.apply_async")
@@ -68,6 +102,9 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         task_id = response.json()["task_id"]
         self.assertEqual((self.settings.uploads_dir / f"{task_id}.mp4").read_bytes(), b"video")
+        record = json.loads((self.settings.tasks_dir / f"{task_id}.json").read_text("utf-8"))
+        self.assertEqual(record["filename"], "video.mp4")
+        self.assertEqual(record["status"], "PENDING")
         enqueue.assert_called_once_with(args=[task_id], task_id=task_id, retry=False)
 
     @patch("app.main.dub_video.apply_async")
@@ -90,6 +127,53 @@ class BackendTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 503)
         self.assertEqual(list(self.settings.uploads_dir.iterdir()), [])
+        self.assertEqual(list(self.settings.tasks_dir.iterdir()), [])
+
+    def test_dashboard_and_upload_config_are_served(self):
+        page = self.client.get("/")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("text/html", page.headers["content-type"])
+        self.assertIn("MyDubber", page.text)
+        self.assertIn("/assets/app.js", page.text)
+        config = self.client.get("/api/v1/dubbing/config")
+        self.assertEqual(config.status_code, 200)
+        self.assertEqual(config.json()["max_upload_mb"], 1)
+        self.assertEqual(config.json()["accepted_format"], ".mp4")
+
+    @patch("app.main.dub_video.apply_async")
+    def test_task_list_reads_persisted_metadata(self, _enqueue):
+        created = self.client.post("/api/v1/dubbing/tasks", files={"file": ("clip.mp4", b"video")})
+        self.assertEqual(created.status_code, 202)
+        task_id = created.json()["task_id"]
+        listing = self.client.get("/api/v1/dubbing/tasks?limit=10")
+        self.assertEqual(listing.status_code, 200)
+        payload = listing.json()
+        self.assertEqual(payload["active"], 1)
+        self.assertEqual(payload["tasks"][0]["task_id"], task_id)
+        self.assertEqual(payload["tasks"][0]["filename"], "clip.mp4")
+        self.assertEqual(payload["tasks"][0]["status"], "PENDING")
+
+    @patch("app.main.dub_video.apply_async")
+    def test_retry_requeues_failed_task_with_existing_upload(self, enqueue):
+        missing = self.client.post(f"/api/v1/dubbing/tasks/{uuid4()}/retry")
+        self.assertEqual(missing.status_code, 404)
+
+        created = self.client.post("/api/v1/dubbing/tasks", files={"file": ("clip.mp4", b"video")})
+        self.assertEqual(created.status_code, 202)
+        task_id = created.json()["task_id"]
+        enqueue.reset_mock()
+
+        from app import task_store
+
+        task_store.update_task(task_id, status="FAILURE", stage="failed", error="failed")
+        response = self.client.post(f"/api/v1/dubbing/tasks/{task_id}/retry")
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["status"], "PENDING")
+        enqueue.assert_called_once_with(args=[task_id], task_id=task_id, retry=False)
+        record = task_store.get_task(task_id)
+        self.assertEqual(record["status"], "PENDING")
+        self.assertEqual(record["stage"], "queued")
+        self.assertIsNone(record["error"])
 
     @patch("app.main.celery_app.AsyncResult")
     def test_polling_states(self, async_result):
@@ -296,38 +380,59 @@ class BackendTests(unittest.TestCase):
             engine.assert_called_once_with(str(model), use_cuda=False)
 
     def test_timeline_has_exact_duration_and_silence(self):
-        def fake_ffmpeg(*arguments):
-            destination = Path(arguments[-1])
-            if destination.suffix == ".wav":
-                with wave.open(str(destination), "wb") as audio:
-                    audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
-                    audio.writeframes(b"\x01\x00" * 8000)
-            else:
-                destination.write_bytes(b"mp3")
-
+        voice = FakeVoice(seconds=2.0)
+        work_dir = Path(self.directory.name)
         with (
-            patch("app.tasks.synthesize_speech") as speech,
-            patch("app.tasks.media_duration", return_value=2),
-            patch("app.tasks.ffmpeg", side_effect=fake_ffmpeg) as media,
+            patch("app.tasks.piper_voice", return_value=voice),
+            patch("app.tasks.ffmpeg") as media,
         ):
-            speech.side_effect = lambda text, path: path.touch()
-            output = synthesize(
-                [{"start": 1, "end": 2, "text": "Halo"}], 3, Path(self.directory.name)
-            )
-        self.assertTrue(output.exists())
-        with wave.open(str(Path(self.directory.name) / "timeline.wav"), "rb") as timeline:
-            self.assertEqual(timeline.getnframes(), 48000)
-            self.assertEqual(timeline.readframes(16000), b"\x00\x00" * 16000)
-            self.assertEqual(timeline.readframes(1), b"\x01\x00")
-        self.assertIn("atempo=2.00000000", media.call_args_list[0].args[4])
+            output = synthesize([{"start": 1, "end": 2, "text": "Halo"}], 3, work_dir)
+        media.assert_not_called()
+        self.assertEqual(output, work_dir / "timeline.wav")
+        self.assertFalse((work_dir / "timeline.wav.part").exists())
+        with wave.open(str(output), "rb") as timeline:
+            self.assertEqual(timeline.getframerate(), 22050)
+            self.assertEqual(timeline.getnframes(), 3 * 22050)
+            self.assertEqual(timeline.readframes(22050), b"\x00\x00" * 22050)
+            self.assertEqual(timeline.readframes(1), (1000).to_bytes(2, "little", signed=True))
+        # 2 seconds do not fit into a 1 second slot, so Piper resynthesizes faster.
+        self.assertEqual(voice.length_scales[0], 1.0)
+        self.assertAlmostEqual(voice.length_scales[1], 0.7)
 
-    def test_tempo_and_chunked_silence(self):
-        self.assertEqual(tempo_filter(8), "atempo=2,atempo=2,atempo=2.00000000")
+    def test_short_speech_is_padded_with_silence(self):
+        voice = FakeVoice(seconds=0.4)
+        work_dir = Path(self.directory.name)
+        with patch("app.tasks.piper_voice", return_value=voice):
+            output = synthesize([{"start": 0, "end": 1, "text": "Halo"}], 1, work_dir)
+        self.assertEqual(voice.length_scales, [1.0])
+        with wave.open(str(output), "rb") as timeline:
+            self.assertEqual(timeline.getnframes(), 22050)
+            frames = np.frombuffer(timeline.readframes(22050), dtype="<i2")
+        self.assertTrue((frames[:10] == 1000).all())
+        self.assertTrue((frames[-10:] == 0).all())
+
+    def test_timeline_can_span_hours_without_buffering(self):
+        voice = FakeVoice(seconds=0.2, sample_rate=100)
+        work_dir = Path(self.directory.name)
+        segments = [
+            {"start": float(minute * 60), "end": float(minute * 60 + 1), "text": "Halo"}
+            for minute in range(0, 120, 2)
+        ]
+        with patch("app.tasks.piper_voice", return_value=voice):
+            output = synthesize(segments, 7200, work_dir)
+        with wave.open(str(output), "rb") as timeline:
+            self.assertEqual(timeline.getframerate(), 100)
+            self.assertEqual(timeline.getnframes(), 7200 * 100)
+
+    def test_chunked_silence_uses_requested_sample_rate(self):
         audio = Mock()
         write_silence(audio, 32001)
         self.assertEqual(
             sum(len(call.args[0]) for call in audio.writeframesraw.call_args_list), 64002
         )
+        audio = Mock()
+        write_silence(audio, 22050 * 2 + 10, 22050)
+        self.assertEqual(len(audio.writeframesraw.call_args_list), 3)
 
     def test_pipeline_progress_merge_and_cleanup(self):
         task_id = str(uuid4())
@@ -342,13 +447,15 @@ class BackendTests(unittest.TestCase):
             patch("app.tasks.settings", self.settings),
             patch(
                 "app.tasks.probe_media",
-                return_value={"streams": [{"codec_type": "video"}, {"codec_type": "audio"}]},
+                return_value={
+                    "format": {"duration": "2.0"},
+                    "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
+                },
             ),
-            patch("app.tasks.media_duration", return_value=2),
             patch("app.tasks.ffmpeg", side_effect=fake_ffmpeg) as media,
             patch("app.tasks.transcribe", return_value=segments),
             patch("app.tasks.translate_segments", return_value=segments),
-            patch("app.tasks.synthesize", return_value=Path(self.directory.name) / "dubbing.mp3"),
+            patch("app.tasks.synthesize", return_value=Path(self.directory.name) / "timeline.wav"),
             patch.object(dub_video, "update_state") as update,
         ):
             result = dub_video.run(task_id)
@@ -375,6 +482,300 @@ class BackendTests(unittest.TestCase):
                 dub_video.run(task_id)
         self.assertFalse(source.exists())
         self.assertFalse((self.settings.temp_dir / task_id).exists())
+
+    def test_pipeline_reuses_transcript_and_translation_checkpoints(self):
+        task_id = str(uuid4())
+        source = self.settings.uploads_dir / f"{task_id}.mp4"
+        source.write_bytes(b"video")
+        work_dir = self.settings.temp_dir / task_id
+        work_dir.mkdir(parents=True)
+        segments = [{"start": 0.0, "end": 1.0, "text": "Halo"}]
+        (work_dir / "segments.json").write_text(
+            json.dumps({"duration": 2.0, "segments": segments}), encoding="utf-8"
+        )
+        (work_dir / "translations.json").write_text(
+            json.dumps({"entries": [{"index": 0, "source": "Halo", "text": "Halo"}]}),
+            encoding="utf-8",
+        )
+        (work_dir / "timeline.wav").write_bytes(b"timeline")
+
+        def fake_ffmpeg(*arguments):
+            Path(arguments[-1]).touch()
+
+        with (
+            patch("app.tasks.settings", self.settings),
+            patch(
+                "app.tasks.probe_media",
+                return_value={
+                    "format": {"duration": "2.0"},
+                    "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
+                },
+            ),
+            patch("app.tasks.ffmpeg", side_effect=fake_ffmpeg),
+            patch("app.tasks.transcribe") as transcribe_task,
+            patch("app.tasks.translate_segments") as translate_task,
+            patch("app.tasks.synthesize") as synthesize_task,
+            patch.object(dub_video, "update_state"),
+        ):
+            result = dub_video.run(task_id)
+
+        transcribe_task.assert_not_called()
+        synthesize_task.assert_not_called()
+        translate_task.assert_called_once()
+        self.assertEqual(result["progress"], 100)
+        self.assertFalse(source.exists())
+        self.assertFalse(work_dir.exists())
+
+    def test_pipeline_keeps_the_upload_when_a_checkpoint_can_be_resumed(self):
+        task_id = str(uuid4())
+        source = self.settings.uploads_dir / f"{task_id}.mp4"
+        source.write_bytes(b"video")
+        work_dir = self.settings.temp_dir / task_id
+        work_dir.mkdir(parents=True)
+        (work_dir / "segments.json").write_text(
+            json.dumps({"duration": 2.0, "segments": [{"start": 0, "end": 1, "text": "Halo"}]}),
+            encoding="utf-8",
+        )
+
+        with (
+            patch("app.tasks.settings", self.settings),
+            patch(
+                "app.tasks.probe_media",
+                return_value={
+                    "format": {"duration": "2.0"},
+                    "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
+                },
+            ),
+            patch("app.tasks.translate_segments", side_effect=ValueError("ollama offline")),
+        ):
+            with self.assertRaises(ValueError):
+                dub_video.run(task_id)
+
+        self.assertTrue(source.exists())
+        self.assertTrue((work_dir / "segments.json").exists())
+
+    def test_rejects_videos_over_the_duration_limit(self):
+        source = Path(self.directory.name) / "video.mp4"
+        source.write_bytes(b"video")
+        limited = Settings(storage_dir=Path(self.directory.name), max_media_hours=0.5)
+        with patch("app.tasks.settings", limited):
+            with self.assertRaisesRegex(ValueError, "configured limit"):
+                assert_media_limits(source, 3600)
+
+    def test_rejects_videos_without_enough_disk_space(self):
+        source = Path(self.directory.name) / "video.mp4"
+        source.write_bytes(b"video")
+        usage = SimpleNamespace(total=1, used=1, free=0)
+        with patch("app.tasks.shutil.disk_usage", return_value=usage):
+            with self.assertRaisesRegex(RuntimeError, "disk space"):
+                assert_media_limits(source, 60)
+
+    def test_timeline_sample_rate_uses_the_voice_configuration(self):
+        model = Path(self.directory.name) / "voice.onnx"
+        model.touch()
+        Path(f"{model}.json").write_text(
+            json.dumps({"audio": {"sample_rate": 16000}}), encoding="utf-8"
+        )
+        with patch("app.tasks.settings", Settings(piper_model_path=model)):
+            self.assertEqual(timeline_sample_rate(), 16000)
+        with patch("app.tasks.settings", Settings(piper_model_path=Path("missing.onnx"))):
+            self.assertEqual(timeline_sample_rate(), 22050)
+
+    def test_stale_artifacts_are_removed(self):
+        old_upload = self.settings.uploads_dir / f"{uuid4()}.mp4"
+        old_upload.write_bytes(b"old")
+        old_work = self.settings.temp_dir / str(uuid4())
+        old_work.mkdir()
+        (old_work / "segments.json").write_text("{}", encoding="utf-8")
+        fresh_upload = self.settings.uploads_dir / f"{uuid4()}.mp4"
+        fresh_upload.write_bytes(b"fresh")
+        for path in (old_upload, old_work):
+            os.utime(path, (0, 0))
+        with patch("app.tasks.settings", self.settings):
+            cleanup_stale_artifacts(max_age_seconds=60)
+        self.assertFalse(old_upload.exists())
+        self.assertFalse(old_work.exists())
+        self.assertTrue(fresh_upload.exists())
+
+    def test_progress_reporter_throttles_repeated_updates(self):
+        update = Mock()
+        reporter = ProgressReporter(update, minimum_interval=3600)
+        reporter(10, "extracted")
+        reporter(12, "transcribing")
+        reporter(13, "transcribing")
+        reporter(30, "transcribed")
+        self.assertEqual(
+            [call.kwargs["meta"]["progress"] for call in update.call_args_list],
+            [10, 12, 30],
+        )
+
+    def test_transcription_avoids_long_audio_drift(self):
+        segment = SimpleNamespace(start=0.0, end=1.0, text=" Hello ")
+        engine = Mock()
+        engine.transcribe.return_value = ([segment], None)
+        updates = []
+        with patch("app.tasks.whisper_model", return_value=engine):
+            transcript = transcribe(
+                Path("audio.wav"),
+                duration=2.0,
+                on_progress=lambda percent, stage: updates.append((percent, stage)),
+            )
+        self.assertEqual(transcript, [{"start": 0.0, "end": 1.0, "text": "Hello"}])
+        options = engine.transcribe.call_args.kwargs
+        self.assertFalse(options["condition_on_previous_text"])
+        self.assertTrue(options["vad_filter"])
+        self.assertEqual(updates, [(19, "transcribing")])
+
+    def test_media_duration_falls_back_to_stream_duration(self):
+        with patch(
+            "app.tasks.probe_media",
+            return_value={"format": {"duration": "N/A"}, "streams": [{"duration": "120.5"}]},
+        ):
+            self.assertEqual(media_duration(Path("video.mp4")), 120.5)
+
+    def test_media_timeout_follows_configuration(self):
+        with (
+            patch("app.tasks.subprocess.run") as process,
+            patch("app.tasks.settings") as configured,
+        ):
+            process.return_value.stdout = ""
+            configured.ffmpeg_timeout = 1234
+            run_process(["custom-tool", "-version"])
+        self.assertEqual(process.call_args.kwargs["timeout"], 1234)
+
+    def test_numbered_translation_parser(self):
+        self.assertEqual(parse_numbered_translation("[1] Satu\n[2] Dua", 2), ["Satu", "Dua"])
+        self.assertEqual(
+            parse_numbered_translation("[1] Satu\nlanjutan\n[2] Dua", 2),
+            ["Satu lanjutan", "Dua"],
+        )
+        self.assertIsNone(parse_numbered_translation("[1] Satu", 2))
+        self.assertIsNone(parse_numbered_translation("[1] \n[2] Dua", 2))
+        self.assertIsNone(parse_numbered_translation("[1] Satu\n[3] Tiga", 2))
+
+    @patch("app.tasks.httpx.Client")
+    def test_translation_batches_numbered_segments(self, factory):
+        client = Mock()
+        client.post.return_value = ollama_response("[1] Satu\n[2] Dua\n[3] Tiga")
+        factory.return_value.__enter__.return_value = client
+        translated = translate_segments(
+            [
+                {"start": 0, "end": 1, "text": "One"},
+                {"start": 1, "end": 2, "text": "Two"},
+                {"start": 2, "end": 3, "text": "Three"},
+            ]
+        )
+        self.assertEqual([item["text"] for item in translated], ["Satu", "Dua", "Tiga"])
+        self.assertEqual(client.post.call_count, 1)
+        self.assertEqual(
+            client.post.call_args.kwargs["json"]["prompt"], "[1] One\n[2] Two\n[3] Three"
+        )
+
+    @patch("app.tasks.httpx.Client")
+    def test_unusable_batch_falls_back_to_single_segments(self, factory):
+        client = Mock()
+        client.post.side_effect = [
+            ollama_response("not numbered at all"),
+            ollama_response("Satu"),
+            ollama_response("Dua"),
+        ]
+        factory.return_value.__enter__.return_value = client
+        translated = translate_segments(
+            [
+                {"start": 0, "end": 1, "text": "One"},
+                {"start": 1, "end": 2, "text": "Two"},
+            ]
+        )
+        self.assertEqual([item["text"] for item in translated], ["Satu", "Dua"])
+        self.assertEqual(client.post.call_count, 3)
+
+    @patch("app.tasks.httpx.Client")
+    def test_truncated_batch_falls_back_to_single_segments(self, factory):
+        client = Mock()
+        client.post.side_effect = [
+            ollama_response("[1] Satu", done_reason="length"),
+            ollama_response("Satu"),
+            ollama_response("Dua"),
+        ]
+        factory.return_value.__enter__.return_value = client
+        translated = translate_segments(
+            [
+                {"start": 0, "end": 1, "text": "One"},
+                {"start": 1, "end": 2, "text": "Two"},
+            ]
+        )
+        self.assertEqual([item["text"] for item in translated], ["Satu", "Dua"])
+        self.assertEqual(client.post.call_count, 3)
+
+    @patch("app.tasks.httpx.Client")
+    def test_translation_resumes_from_a_checkpoint(self, factory):
+        checkpoint = Path(self.directory.name) / "translations.json"
+        checkpoint.write_text(
+            json.dumps({"entries": [{"index": 0, "source": "One", "text": "Satu"}]}),
+            encoding="utf-8",
+        )
+        client = Mock()
+        client.post.return_value = ollama_response("Dua")
+        factory.return_value.__enter__.return_value = client
+        translated = translate_segments(
+            [
+                {"start": 0, "end": 1, "text": "One"},
+                {"start": 1, "end": 2, "text": "Two"},
+            ],
+            checkpoint=checkpoint,
+        )
+        self.assertEqual([item["text"] for item in translated], ["Satu", "Dua"])
+        self.assertEqual(client.post.call_count, 1)
+        self.assertEqual(client.post.call_args.kwargs["json"]["prompt"], "Two")
+        entries = json.loads(checkpoint.read_text(encoding="utf-8"))["entries"]
+        self.assertEqual([entry["text"] for entry in entries], ["Satu", "Dua"])
+
+    @patch("app.tasks.httpx.Client")
+    def test_repeated_lines_are_translated_once(self, factory):
+        client = Mock()
+        client.post.return_value = ollama_response("Terima kasih")
+        factory.return_value.__enter__.return_value = client
+        translated = translate_segments(
+            [
+                {"start": 0, "end": 1, "text": "Thank you"},
+                {"start": 1, "end": 2, "text": "Thank you"},
+            ]
+        )
+        self.assertEqual([item["text"] for item in translated], ["Terima kasih", "Terima kasih"])
+        self.assertEqual(client.post.call_count, 1)
+
+    @patch("app.tasks.time.sleep")
+    @patch("app.tasks.httpx.Client")
+    def test_translation_retries_transport_errors(self, factory, sleep):
+        client = Mock()
+        client.post.side_effect = [
+            httpx.ConnectError("offline", request=httpx.Request("POST", "http://localhost")),
+            ollama_response("Halo"),
+        ]
+        factory.return_value.__enter__.return_value = client
+        translated = translate_segments([{"start": 0, "end": 1, "text": "Hello"}])
+        self.assertEqual(translated[0]["text"], "Halo")
+        self.assertEqual(client.post.call_count, 2)
+        sleep.assert_called_once()
+
+    @patch("app.tasks.time.sleep")
+    @patch("app.tasks.httpx.Client")
+    def test_translation_reports_retry_exhaustion(self, factory, _sleep):
+        client = Mock()
+        client.post.side_effect = httpx.ConnectError(
+            "offline", request=httpx.Request("POST", "http://localhost")
+        )
+        factory.return_value.__enter__.return_value = client
+        with self.assertRaisesRegex(ValueError, "failed after 3 attempts"):
+            translate_segments([{"start": 0, "end": 1, "text": "Hello"}])
+        self.assertEqual(client.post.call_count, 3)
+
+    def test_celery_allows_long_running_tasks(self):
+        from app.celery_utils import celery_app
+
+        self.assertGreater(celery_app.conf.broker_transport_options["visibility_timeout"], 3600)
+        self.assertFalse(celery_app.conf.task_acks_late)
+        self.assertIsNone(celery_app.conf.task_time_limit)
 
 
 if __name__ == "__main__":

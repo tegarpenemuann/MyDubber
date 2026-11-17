@@ -12,7 +12,7 @@ import numpy as np
 from app.celery_utils import celery_app
 from app.config import settings
 from app.offline import require_loopback
-from app.tasks import probe_media, run_process
+from app.tasks import media_duration, probe_media, run_process
 
 
 def video_hash(path: Path) -> str:
@@ -166,9 +166,15 @@ def main() -> None:
     )
     parser.add_argument("video", type=Path)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
-    parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=0,
+        help="Seconds to wait for the task. Defaults to a value scaled by video length.",
+    )
     arguments = parser.parse_args()
-    test_video(arguments.video, arguments.base_url, arguments.timeout)
+    timeout = arguments.timeout or max(1800, int(media_duration(arguments.video) * 4) + 600)
+    test_video(arguments.video, arguments.base_url, timeout)
 
 
 if __name__ == "__main__":

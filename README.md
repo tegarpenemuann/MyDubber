@@ -27,8 +27,9 @@ Indonesian voice.
 Everything runs on your own computer. No account, no API key, no upload to a
 cloud service, and no GPU.
 
-> **This is a backend service, not a desktop app.** You use it through a web page
-> called Swagger UI, or with `curl`. There is no login screen.
+> **This is a local web app plus an HTTP API.** Open the dashboard at
+> **http://127.0.0.1:8000/** to upload, watch progress, and play results, or use
+> Swagger UI at **/docs** and `curl`. There is no login screen.
 
 ## Contents
 
@@ -36,7 +37,9 @@ cloud service, and no GPU.
 - [Features](#features)
 - [How it works](#how-it-works)
 - [Demo: English short to Indonesian dub](#demo-english-short-to-indonesian-dub)
+- [Long videos](#long-videos)
 - [Quick start](#quick-start)
+- [Web dashboard](#web-dashboard)
 - [Stopping](#stopping)
 - [Plain-English glossary](#plain-english-glossary)
 - [Configuration](#configuration)
@@ -67,12 +70,17 @@ third-party service.
 ## Features
 
 - Upload an MP4 and get a task ID immediately. Processing continues in the background.
+- Handles long recordings: a two-hour video is supported, with a configurable limit of six hours.
 - Speech recognition with faster-whisper `base`, CPU, INT8.
-- Local translation with Ollama and the `llama3.2` model, GPU disabled.
+- Local translation with Ollama and the `llama3.2` model, GPU disabled and batched for long transcripts.
 - Indonesian speech synthesis with Piper voice `id_ID-news_tts-medium`.
-- Speech is fitted to the original segment timing, so the dub stays in sync with the picture.
+- Speech is fitted to the original segment timing with Piper `length_scale`, so the dub stays in sync with the picture.
+- Checkpoints let an interrupted task resume without repeating transcription and finished translation batches.
 - The video stream is copied with FFmpeg (`-c:v copy`), so it is not re-encoded.
 - Progress updates by milestone, a downloadable result, and HTTP Range support for video players.
+- A local dashboard with drag-and-drop multi-file upload, live progress over
+  Server-Sent Events, persistent history, play/download, and light or dark themes
+  in Indonesian and English.
 - Works fully offline after a one-time asset download.
 
 ```text
@@ -87,14 +95,18 @@ process picks up the job and runs five steps:
 | Progress | Stage | What happens |
 | --- | --- | --- |
 | 10% | `extracted` | FFmpeg extracts the audio as 16 kHz mono WAV. |
-| 30% | `transcribed` | Whisper turns the speech into text with timestamps. |
-| 60% | `translated` | Ollama translates each segment into Indonesian. |
-| 80% | `synthesized` | Piper speaks each segment in Indonesian and the segments are assembled into one audio track. |
+| 10–29% | `transcribing` | Whisper turns the speech into text with timestamps. |
+| 30% | `transcribed` | The transcript is stored as a checkpoint. |
+| 30–59% | `translating` | Ollama translates the segments in batches into Indonesian. |
+| 60% | `translated` | Every segment has an Indonesian translation. |
+| 60–79% | `synthesizing` | Piper speaks each segment and the timeline is assembled at the voice sample rate. |
+| 80% | `synthesized` | The dubbing timeline has exactly the duration of the video. |
 | 100% | `completed` | FFmpeg merges the original video with the new audio and publishes the result. |
 
-Progress is **milestone-based**. It is not a time estimate, and it can jump from
-30 to 60 directly. Translation runs while progress remains at 30%; speech
-synthesis runs while it remains at 60%. This does not necessarily mean a task is stuck.
+Progress is **milestone-based** with an intra-stage percentage. It is not a time
+estimate, so the number can stay still for a while during a long stage. Stage
+changes always update the progress; intermediate updates are throttled to one
+every few seconds so Redis is not flooded.
 
 ## Demo: English short to Indonesian dub
 
@@ -120,13 +132,76 @@ Processing time depends on CPU performance, speech density, model loading, and
 video length. CPU translation can take longer than the other stages; no fixed
 turnaround time is guaranteed.
 
+## Long videos
+
+Two-hour recordings are supported on CPU. Keep these points in mind:
+
+- The default duration limit is **6 hours** (`MYDUBBER_MAX_MEDIA_HOURS`). A
+  longer file fails early with a clear message.
+- The default upload limit is **4096 MiB**. Raise `MYDUBBER_MAX_UPLOAD_MB` in
+  `.env` for larger files; the API and the worker must use the same value.
+- Expect roughly **1–1.5 hours** of processing for a 2-hour 1080p video on a
+  4-thread CPU with the base Whisper model. This is an estimate, not a promise.
+- Free disk space on the storage drive should be at least **twice the video
+  size plus 0.35 GB per video hour** for the temporary timeline. The upload is
+  first spooled into the system temporary directory, so that drive needs free
+  space too.
+- The worker must keep running for the whole task. A 2-hour job is not atomic:
+  if the worker stops, the upload and the JSON checkpoints are kept for
+  `MYDUBBER_RESULT_EXPIRES` seconds (24 hours by default).
+- After a failure, requeue the **same task ID** instead of uploading again.
+  Finished transcription and translation batches are reused, and synthesis
+  restarts from the last completed timeline state.
+
+Requeue a failed task from the project folder while Redis and the worker are
+running:
+
+```bash
+python -c "from app.tasks import dub_video; dub_video.apply_async(args=['<task_id>'], task_id='<task_id>', retry=False)"
+```
+
+The API status for that task will move from `FAILURE` back to `PROGRESS`. Old
+uploads and checkpoints that are never retried are deleted automatically after
+`MYDUBBER_RESULT_EXPIRES` seconds.
+
 ## Quick start
 
 What you need: Docker Desktop, Ollama with the `llama3.2` model, Python 3.10+,
-and FFmpeg (installed automatically on Windows). 16 GB RAM and about 3 GB of
-disk space are recommended.
+and FFmpeg (installed automatically on Windows). GNU Make is optional and enables
+the fast commands below. 16 GB RAM and about 3 GB of disk space are recommended.
 
 Steps 1–3 are one-time setup. Steps 4–7 repeat every time you use MyDubber.
+
+### Fast path with Make
+
+If GNU Make is installed, two commands replace steps 1–6:
+
+```bash
+make setup   # once: create .venv, install dependencies, copy .env, download assets
+make up      # start Redis, the API, and the worker
+```
+
+Docker Desktop must be running. Ollama is never started or stopped by these
+targets, so the external host instance is used directly. `make up` prints the
+Swagger URL and writes the API and worker logs to `storage/logs/`.
+
+| Command | What it does |
+| --- | --- |
+| `make setup` | Create `.venv`, install dependencies, copy `.env.example`, download models and tools. |
+| `make up` | Start Redis, the API, and the worker in the background. |
+| `make stop` | Stop the API and worker; keep Redis running. |
+| `make down` | Stop the API, the worker, and Redis. The Redis volume and results are kept. |
+| `make status` | Show process, API, Redis, and Ollama status. |
+| `make doctor` | Check prerequisites, local assets, ports, and Ollama. |
+| `make logs` | Follow the API and worker logs; `make logs-api` or `make logs-worker` for one. |
+| `make test` / `make lint` | Run the unit tests or the style checks. |
+| `make e2e VIDEO=/path/to/video.mp4` | Run the integration test with a real video. |
+
+Use `make up PORT=8001` if port 8000 is busy, and `make logs LINES=200` to show
+more history. Stopping the stack while a dub is running interrupts that task;
+the upload and JSON checkpoints are kept for a requeue.
+
+The manual steps below do the same thing without Make.
 
 ### 1. Install Docker
 
@@ -248,7 +323,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 Ready when it prints `Uvicorn running on http://127.0.0.1:8000`. Open
-**http://127.0.0.1:8000/docs** in your browser; that is Swagger UI.
+**http://127.0.0.1:8000/** for the dashboard, or
+**http://127.0.0.1:8000/docs** for Swagger UI.
 
 > Port already in use? Change `--port 8000` to `--port 8001`, then open
 > `http://127.0.0.1:8001/docs`.
@@ -263,6 +339,10 @@ the API log and rerun step 3 if files are missing, then press **Ctrl+F5** on
 JavaScript and CSS are ready. Use your API port in these URLs if you changed it.
 
 ### 7. Dub your first video
+
+The dashboard at **http://127.0.0.1:8000/** is the easiest route: drag an MP4 onto
+the drop zone and watch each stage update live. The Swagger flow below is the
+equivalent API-only path.
 
 1. Open **http://127.0.0.1:8000/docs**.
 2. Open **POST /api/v1/dubbing/tasks** → **Try it out** → choose an MP4 →
@@ -302,18 +382,52 @@ On Windows PowerShell, use `curl.exe` instead of `curl`.
 | `SUCCESS` | Done; `download_url` is available. |
 | `FAILURE` / `REVOKED` | Failed or cancelled; check the worker log. |
 
-Progress is milestone-based (10 extract, 30 transcribe, 60 translate, 80
-synthesize, 100 merge), not a time estimate.
+Progress is milestone-based (10 extract, 10–29 transcribe, 30–59 translate, 60–79
+synthesize, 80 merge), not a time estimate.
 
 ### Upload errors
 
 | Code | Meaning |
 | --- | --- |
 | `400` | The file is empty. |
-| `413` | Over the upload limit (500 MiB by default). |
+| `413` | Over the upload limit (4096 MiB by default). |
 | `415` | The extension is not `.mp4`. |
 | `422` | Invalid request, or the `task_id` is not a UUID. |
 | `503` | Redis is not reachable. |
+
+## Web dashboard
+
+The dashboard is served by the same FastAPI process at
+**http://127.0.0.1:8000/** (or `make open`). It is plain HTML, CSS, and
+JavaScript with no build step and no CDN, so it works offline like the rest of
+the app.
+
+- Drag one or more MP4 files onto the drop zone. Uploads are sent one at a time
+  and each file shows its own upload progress.
+- Queued and running tasks update live through Server-Sent Events. The list is
+  restored from disk when the page or the API restarts.
+- Filter by active, completed, or failed tasks, and search by filename.
+- Completed tasks can be played in a dialog or downloaded without leaving the
+  page.
+- The interface is bilingual. It follows the browser language (`id` becomes
+  Indonesian, anything else English) and remembers your language and light or
+  dark theme in `localStorage`.
+
+The dashboard uses these endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/v1/dubbing/config` | Upload size and duration limits shown in the UI. |
+| `GET /api/v1/dubbing/tasks?limit=50` | Persisted task metadata, active first. |
+| `GET /api/v1/dubbing/events` | SSE stream of task snapshots (`tasks`) and 15-second heartbeats (`ping`). Hidden from OpenAPI. |
+| `POST /api/v1/dubbing/tasks` | Upload and queue a task. |
+| `GET /api/v1/dubbing/tasks/{task_id}` | Poll one task. |
+| `GET /outputs/{task_id}.mp4` | Play or download a result. |
+
+Task metadata lives in `storage/tasks/<task_id>.json`, written atomically by both
+the API and the worker. Up to 200 records are kept, and records without a result
+are pruned after `MYDUBBER_RESULT_EXPIRES`. Result videos stay in
+`storage/outputs/`.
 
 ## Stopping
 
@@ -397,10 +511,16 @@ The table below covers every application setting:
 | `MYDUBBER_WHISPER_MODEL_DIR` | `./models/whisper-base` | Local Whisper model directory. |
 | `MYDUBBER_PIPER_MODEL_PATH` | `./models/piper/id_ID-news_tts-medium.onnx` | Local Piper voice. |
 | `MYDUBBER_CPU_THREADS` | `4` | Thread setting used by FFmpeg, Whisper, and Ollama. Range 1–16; does not configure Piper's ONNX session. |
-| `MYDUBBER_MAX_UPLOAD_MB` | `500` | Upload limit in MiB. |
-| `MYDUBBER_RESULT_EXPIRES` | `86400` | How long task metadata stays in Redis, in seconds. |
+| `MYDUBBER_MAX_UPLOAD_MB` | `4096` | Upload limit in MiB. |
+| `MYDUBBER_MAX_MEDIA_HOURS` | `6` | Maximum accepted video duration, in hours. |
+| `MYDUBBER_RESULT_EXPIRES` | `86400` | How long task metadata stays in Redis, and how long failed uploads/checkpoints are kept, in seconds. |
 | `MYDUBBER_OLLAMA_TIMEOUT` | `300` | Timeout per translation request, in seconds. |
-| `MYDUBBER_FFMPEG_TIMEOUT` | `1800` | Timeout per FFmpeg/FFprobe call, in seconds. |
+| `MYDUBBER_FFMPEG_TIMEOUT` | `7200` | Timeout per FFmpeg/FFprobe call, in seconds. |
+| `MYDUBBER_TRANSLATION_BATCH_CHARS` | `700` | Maximum transcript characters per Ollama request. Set `0` to translate one segment per request. |
+| `MYDUBBER_TRANSLATION_BATCH_SEGMENTS` | `8` | Maximum segments per Ollama request. |
+| `MYDUBBER_TRANSLATION_RETRIES` | `3` | Attempts per translation request before the task fails. |
+| `MYDUBBER_PROGRESS_MIN_INTERVAL` | `5` | Minimum seconds between intra-stage progress updates. |
+| `MYDUBBER_TASK_VISIBILITY_TIMEOUT` | `43200` | Redis broker visibility timeout. Must exceed the longest task. |
 | `MYDUBBER_FFMPEG_BINARY` | auto | Override the FFmpeg executable path. |
 | `MYDUBBER_FFPROBE_BINARY` | auto | Override the FFprobe executable path. |
 | `MYDUBBER_CORS_ORIGINS` | `["http://localhost:3000","http://localhost:5173"]` | Allowed browser origins, as a JSON array. |
@@ -425,7 +545,7 @@ worker block connections to non-loopback hosts, so Redis and Ollama must run on
 | --- | --- |
 | Voice ID | `id_ID-news_tts-medium` |
 | Language | Indonesian (`id_ID`), one speaker |
-| Quality | medium, 22,050 Hz (the pipeline resamples it to 16 kHz mono) |
+| Quality | medium, 22,050 Hz (used natively for the dubbing timeline) |
 | Phonemizer | eSpeak NG, voice `id`, running locally |
 | Training data | `news_tts`. The model card links the dataset and says "License: See URL". |
 | Repository license | The Piper voices repository declares MIT. The dataset terms may differ. |
@@ -471,7 +591,8 @@ Use a short English clip that you own. The test checks:
 - HTTP Range requests return `206`,
 - temporary upload and work files are deleted.
 
-The report is saved to `storage/e2e-report.json`.
+The wait timeout is scaled from the video duration by default. Pass `--timeout`
+to override it. The report is saved to `storage/e2e-report.json`.
 
 ## Offline use
 
@@ -540,24 +661,38 @@ its own model directory, outside this repository.
 | Celery fails on Windows | The default pool is not supported. | Use `--pool=solo` as shown above. |
 | First run is very slow | Models are being loaded for the first time. | Wait. Later runs reuse the loaded models. |
 | Output does not play in some players | `-c:v copy` kept a codec the player does not support. | Use a standard H.264/AAC MP4. |
+| `make: command not found` | GNU Make is not installed. | Follow the manual steps in [Quick start](#quick-start), or install Make (for example `choco install make`). |
+| `make up` says Docker is not ready | Docker Desktop is stopped or still starting. | Open Docker Desktop, wait until it is running, then run `make up` again. |
+| `make up` says port 8000 is in use | Another API or program owns the port. | Stop it, or run `make up PORT=8001` and open the new URL. |
+| `make up` warns that Ollama is not reachable | The external Ollama service is not running. | Start the Ollama app or run `ollama serve`; pull the model with `ollama pull llama3.2`. |
+| `make stop` leaves a process | It was started manually, outside the Makefile. | Stop it in its original terminal, or use Task Manager / `taskkill`. |
+| A long task stays at 30% for a long time | Translation of a large transcript is CPU-heavy. | Wait, or lower `MYDUBBER_CPU_THREADS` contention by closing other programs. Check the worker log for per-batch warnings. |
+| A long task fails after a worker restart | The job was interrupted, not cancelled. | Restart Redis and the worker, then requeue the same task ID as described in [Long videos](#long-videos). |
+| A long video returns `413` | The file is above `MYDUBBER_MAX_UPLOAD_MB`. | Raise it in `.env` for both the API and the worker. |
+| "Not enough free disk space" | The storage drive cannot hold the upload plus the temporary timeline. | Free space, raise `MYDUBBER_STORAGE_DIR` to another drive, or shorten the video. |
+| "configured limit is 6.0 hours" | The duration guard rejected the video. | Raise `MYDUBBER_MAX_MEDIA_HOURS` if the machine can handle it. |
 
 ## Limitations and security
 
-- **Trusted local use only.** There is no authentication, rate limiting, duration
-  limit, or storage quota. Do not expose the API, Redis, or Ollama to the internet.
+- **Trusted local use only.** There is no authentication, rate limiting, or
+  storage quota. Only a configurable duration limit (`MYDUBBER_MAX_MEDIA_HOURS`)
+  guards resource use. Do not expose the API, Redis, or Ollama to the internet.
 - CORS is not access control.
-- The upload limit is enforced after multipart parsing. Add a request-body limit
-  at your proxy if you put one in front of the API.
+- The upload size is checked as early as possible, but FastAPI still spools the
+  multipart body to the system temporary directory before the API reads it. Add a
+  request-body limit at your proxy if you put one in front of the API.
 - The original audio is replaced, including background music. There is no voice
   cloning, speaker diarization, background separation, or lip-sync.
 - Speech may be sped up or padded to fit the original timestamps. Translation and
   technical terms need human review.
 - Incompatible MP4 codecs can make the video merge fail.
-- Uploads and temporary files are deleted after success or failure. A forced
-  worker kill can leave files or tasks in `STARTED`.
+- Successful tasks delete their upload and temporary files. Failed tasks keep the
+  upload and JSON checkpoints until `MYDUBBER_RESULT_EXPIRES` elapses, so they can
+  be requeued. A forced worker kill can leave files or tasks in `STARTED`.
 - Results stay on disk until you delete them. Task metadata expires after 24 hours
   by default, but the video files do not.
-- Tasks are not retried automatically. Check the worker log after `FAILURE`.
+- Tasks are not retried automatically. Requeue the same task ID after checking the
+  worker log; completed checkpoints are reused.
 - Keep concurrency at 1 on machines with limited memory. Whisper and Piper are
   cached per worker process, and Ollama keeps the model loaded for five minutes.
 
@@ -565,18 +700,29 @@ its own model directory, outside this repository.
 
 ```text
 app/
-  main.py           FastAPI app, upload and status endpoints
+  main.py           FastAPI app, dashboard, upload, list, and status endpoints
   config.py         Settings with the MYDUBBER_ prefix
   celery_utils.py   Celery broker and result backend
   offline.py        Loopback-only network policy
-  tasks.py          The five-stage dubbing pipeline
+  tasks.py          The dubbing pipeline, checkpoints, and progress reporting
+  task_store.py     Atomic JSON task registry shared by the API and the worker
+  events.py         Server-Sent Events broker for live dashboard updates
+  web/
+    index.html      Dashboard markup
+    styles.css      Dark and light studio theme
+    app.js          Upload queue, SSE client, i18n, and player logic
 scripts/
+  dev.py            Start, stop, status, and log helpers used by the Makefile
   prepare_local.py  One-time asset download and local verification
   test_local.py     Real-media integration test
 tests/
   test_backend.py   Unit and API contract tests
+  test_task_store.py  Task registry and pruning tests
+  test_events.py    SSE formatting and broker tests
+  test_dev_script.py  Tests for the developer helper
 docs/
   logo.svg          Project logo
+Makefile            One-command start and stop for Redis, API, and worker
 docker-compose.yml  One service: Redis for the task queue and result metadata
 ```
 

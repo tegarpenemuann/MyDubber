@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="id" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>MyDubber — Studio</title>
+  <link rel="stylesheet" href="/assets/styles.css?v=7">
+</head>
+<body>
+  <div class="hero-backdrop" aria-hidden="true">
+    <div class="hero-grid"></div>
+  </div>
+
+  <div class="app">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="MyDubber">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span class="brand-copy">
+          <strong>MyDubber</strong>
+          <span data-i18n="tagline">Studio dubbing lokal</span>
+        </span>
+      </a>
+
+      <div class="topbar-actions">
+        <span class="connection" id="connection" data-state="connecting" role="status">
+          <span class="connection-dot" aria-hidden="true"></span>
+          <span id="connection-label" data-i18n="connecting">Menyambungkan…</span>
+        </span>
+
+        <div class="segmented" role="group" aria-label="Language">
+          <button type="button" class="segment" data-lang="id">ID</button>
+          <button type="button" class="segment" data-lang="en">EN</button>
+        </div>
+
+        <button type="button" class="icon-button" id="theme-toggle" aria-label="Toggle theme">
+          <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+          </svg>
+          <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11Z"></path>
+          </svg>
+        </button>
+
+        <a
+          class="github-link"
+          href="https://github.com/tegarpenemuann/MyDubber"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="GitHub tegarpenemuann/MyDubber"
+          title="tegarpenemuann/MyDubber"
+        >
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="currentColor"
+              stroke="none"
+              d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2Z"
+            ></path>
+          </svg>
+          <span>GitHub</span>
+        </a>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <span class="eyebrow rise">
+            <span class="eyebrow-dot" aria-hidden="true"></span>
+            <span data-i18n="heroEyebrow">CPU • Offline • Lokal</span>
+          </span>
+          <h1 id="hero-title" class="rise" style="animation-delay: 0.08s" data-i18n="heroTitle">Ubah video menjadi dubbing Indonesia.</h1>
+          <p class="rise" style="animation-delay: 0.16s" data-i18n="heroText">
+            Unggah MP4, lalu pantau setiap tahap secara langsung. Semua proses berjalan
+            di komputer ini tanpa mengirim file ke internet.
+          </p>
+          <ul class="hero-points rise" style="animation-delay: 0.24s">
+            <li data-i18n="heroPoint1">Video panjang hingga beberapa jam</li>
+            <li data-i18n="heroPoint2">Progres real-time lewat SSE</li>
+            <li data-i18n="heroPoint3">Putar dan unduh hasil langsung</li>
+          </ul>
+        </div>
+
+        <form class="dropzone rise" id="upload-form" style="animation-delay: 0.2s" novalidate>
+          <input id="file-input" type="file" accept=".mp4,video/mp4" multiple hidden>
+          <span class="dropzone-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 16V4M7 9l5-5 5 5"></path>
+              <path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"></path>
+            </svg>
+          </span>
+          <strong data-i18n="dropTitle">Tarik video ke sini</strong>
+          <span class="dropzone-hint" data-i18n="dropHint">atau pilih file dari komputer</span>
+          <button type="button" class="button primary" id="browse-button" data-i18n="chooseFiles">
+            Pilih file MP4
+          </button>
+          <small id="upload-limit" class="dropzone-limit">MP4 • memuat batas…</small>
+        </form>
+      </section>
+
+      <section class="upload-queue" id="upload-queue" aria-label="Upload queue" hidden></section>
+
+      <section class="stats" aria-label="Task summary">
+        <article class="stat rise" style="animation-delay: 0.1s">
+          <span class="stat-label" data-i18n="statActive">Sedang diproses</span>
+          <strong id="stat-active">0</strong>
+          <span class="stat-detail" data-i18n="statActiveDetail">termasuk antrean</span>
+        </article>
+        <article class="stat rise" style="animation-delay: 0.16s">
+          <span class="stat-label" data-i18n="statQueued">Menunggu</span>
+          <strong id="stat-queued">0</strong>
+          <span class="stat-detail" data-i18n="statQueuedDetail">siap diambil worker</span>
+        </article>
+        <article class="stat rise" style="animation-delay: 0.22s">
+          <span class="stat-label" data-i18n="statDone">Selesai</span>
+          <strong id="stat-done">0</strong>
+          <span class="stat-detail" data-i18n="statDoneDetail">siap diputar</span>
+        </article>
+        <article class="stat rise" style="animation-delay: 0.28s">
+          <span class="stat-label" data-i18n="statFailed">Gagal</span>
+          <strong id="stat-failed">0</strong>
+          <span class="stat-detail" data-i18n="statFailedDetail">perlu diperiksa</span>
+        </article>
+      </section>
+
+      <section class="tasks-panel rise" style="animation-delay: 0.26s" aria-labelledby="tasks-title">
+        <div class="tasks-head">
+          <div>
+            <h2 id="tasks-title" data-i18n="tasksTitle">Daftar dubbing</h2>
+            <p id="tasks-subtitle" data-i18n="tasksSubtitle">Progres diperbarui otomatis.</p>
+          </div>
+          <div class="tasks-tools">
+            <div class="filters" role="group" aria-label="Filter tasks">
+              <button type="button" class="filter is-active" data-filter="all" data-i18n="filterAll">Semua</button>
+              <button type="button" class="filter" data-filter="active" data-i18n="filterActive">Aktif</button>
+              <button type="button" class="filter" data-filter="done" data-i18n="filterDone">Selesai</button>
+              <button type="button" class="filter" data-filter="failed" data-i18n="filterFailed">Gagal</button>
+            </div>
+            <label class="search">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="7"></circle>
+                <path d="m20 20-3.5-3.5"></path>
+              </svg>
+              <input id="search-input" type="search" data-i18n-placeholder="searchPlaceholder" placeholder="Cari nama file…">
+            </label>
+          </div>
+        </div>
+
+        <div class="task-list" id="task-list" role="list"></div>
+        <div class="empty" id="empty-state" hidden>
+          <span class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <rect x="3" y="5" width="18" height="14" rx="3"></rect>
+              <path d="m10 10 5 3-5 3v-6Z"></path>
+            </svg>
+          </span>
+          <strong id="empty-title" data-i18n="emptyTitle">Belum ada video</strong>
+          <p id="empty-text" data-i18n="emptyText">Unggah MP4 pertama untuk memulai dubbing.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span data-i18n="footerLocal">Diproses lokal di perangkat ini.</span>
+      <a href="/docs" target="_blank" rel="noreferrer" data-i18n="footerApi">Buka dokumentasi API</a>
+    </footer>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+  <dialog class="player" id="player-dialog" aria-labelledby="player-title">
+    <div class="player-head">
+      <div>
+        <span class="player-eyebrow" data-i18n="playerEyebrow">Hasil dubbing</span>
+        <h2 id="player-title">video.mp4</h2>
+      </div>
+      <button type="button" class="icon-button" id="player-close" aria-label="Close">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 6l12 12M18 6 6 18"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="player-body">
+      <video id="player-video" controls playsinline preload="metadata"></video>
+    </div>
+    <div class="player-foot">
+      <a class="button primary" id="player-download" download data-i18n="download">Unduh video</a>
+    </div>
+  </dialog>
+
+  <script src="/assets/app.js?v=7" defer></script>
+</body>
+</html>
