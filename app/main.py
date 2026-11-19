@@ -1,4 +1,5 @@
 import logging
+import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -16,7 +17,7 @@ from app import task_store
 from app.celery_utils import celery_app
 from app.config import PROJECT_ROOT, settings
 from app.events import broker
-from app.tasks import dub_video
+from app.tasks import check_ollama_available, dub_video
 
 logger = logging.getLogger(__name__)
 WEB_DIR = PROJECT_ROOT / "app" / "web"
@@ -38,6 +39,7 @@ settings.ensure_directories()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    task_store.recover_stale_tasks()
     task_store.prune_tasks()
     yield
     await broker.stop()
@@ -113,7 +115,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 app.mount("/outputs", StaticFiles(directory=str(settings.outputs_dir)), name="outputs")
@@ -154,12 +156,14 @@ class TaskCreated(BaseModel):
 
 class TaskStatus(BaseModel):
     task_id: str = Field(description="The task UUID being checked.")
-    status: str = Field(description="PENDING, STARTED, PROGRESS, SUCCESS, FAILURE, or REVOKED.")
+    status: str = Field(
+        description="PENDING, STARTED, PROGRESS, PAUSED, SUCCESS, FAILURE, or REVOKED."
+    )
     progress: int = Field(description="Milestone from 0 to 100, not a time estimate.")
     stage: str = Field(
         description=(
             "queued, processing, extracted, transcribing, transcribed, translating, "
-            "translated, synthesizing, synthesized, completed, or failed."
+            "translated, synthesizing, synthesized, paused, completed, or failed."
         )
     )
     download_url: str | None = Field(
@@ -168,6 +172,11 @@ class TaskStatus(BaseModel):
     error: str | None = Field(
         default=None, description="Generic failure message; details are in the worker log."
     )
+
+
+class TaskDeletedResponse(BaseModel):
+    task_id: str
+    deleted: bool = True
 
 
 class ErrorResponse(BaseModel):
@@ -232,10 +241,13 @@ def list_dubbing_tasks(
 
 
 @app.get("/api/v1/dubbing/events", include_in_schema=False)
-async def stream_dubbing_events(request: Request) -> StreamingResponse:
+async def stream_dubbing_events(
+    request: Request,
+    interval: Annotated[float | None, Query(ge=1, le=3600)] = None,
+) -> StreamingResponse:
     broker.start()
     return StreamingResponse(
-        broker.stream(request),
+        broker.stream(request, refresh_interval=interval),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -276,7 +288,10 @@ async def stream_dubbing_events(request: Request) -> StreamingResponse:
         },
         413: {"model": ErrorResponse, "description": "The file exceeds the upload limit."},
         415: {"model": ErrorResponse, "description": "The file extension is not .mp4."},
-        503: {"model": ErrorResponse, "description": "The Redis queue is not available."},
+        503: {
+            "model": ErrorResponse,
+            "description": "Ollama or the Redis queue is not available.",
+        },
     },
 )
 def create_dubbing_task(
@@ -299,6 +314,10 @@ def create_dubbing_task(
         if file.size == 0:
             file.file.close()
             raise HTTPException(status_code=400, detail="The video file is empty.")
+    ready, message = check_ollama_available()
+    if not ready:
+        file.file.close()
+        raise HTTPException(status_code=503, detail=message)
     task_id = str(uuid4())
     destination = settings.uploads_dir / f"{task_id}.mp4"
     try:
@@ -332,6 +351,51 @@ def create_dubbing_task(
     )
 
 
+def _requeue_task(identifier: str) -> TaskCreated:
+    if (settings.outputs_dir / f"{identifier}.mp4").is_file():
+        raise HTTPException(status_code=409, detail="The dubbing task has already completed.")
+    source = settings.uploads_dir / f"{identifier}.mp4"
+    if not source.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="The uploaded video is no longer available to retry. Upload it again.",
+        )
+    ready, message = check_ollama_available()
+    if not ready:
+        raise HTTPException(status_code=503, detail=message)
+    record = task_store.get_task(identifier)
+    previous_status = record.get("status", "FAILURE") if record else "FAILURE"
+    previous_stage = record.get("stage", "failed") if record else "failed"
+    previous_error = record.get("error") if record else None
+    previous_celery_id = (record or {}).get("celery_task_id", identifier)
+    # Celery keeps revoked task ids in worker memory. Requeue under a fresh id so
+    # a pause/delete followed by resume/retry is not silently discarded.
+    celery_id = f"{identifier}-{uuid4().hex}"
+    if record is None:
+        created = task_store.create_task(identifier, source.name, source.stat().st_size)
+        task_store.update_task(identifier, celery_task_id=celery_id)
+        previous_celery_id = created.get("celery_task_id", identifier)
+    else:
+        task_store.update_task(
+            identifier, status="PENDING", stage="queued", error=None, celery_task_id=celery_id
+        )
+    try:
+        dub_video.apply_async(args=[identifier], task_id=celery_id, retry=False)
+    except Exception as exc:
+        logger.exception("Could not requeue task %s", identifier)
+        task_store.update_task(
+            identifier,
+            status=previous_status,
+            stage=previous_stage,
+            error=previous_error,
+            celery_task_id=previous_celery_id,
+        )
+        raise HTTPException(status_code=503, detail="The Redis queue is not available.") from exc
+    return TaskCreated(
+        task_id=identifier, status="PENDING", status_url=f"/api/v1/dubbing/tasks/{identifier}"
+    )
+
+
 @app.post(
     "/api/v1/dubbing/tasks/{task_id}/retry",
     status_code=status.HTTP_202_ACCEPTED,
@@ -350,37 +414,100 @@ def retry_dubbing_task(
         PathParameter(description="The task_id to requeue."),
     ],
 ) -> TaskCreated:
+    return _requeue_task(str(task_id))
+
+
+@app.post(
+    "/api/v1/dubbing/tasks/{task_id}/pause",
+    tags=["Dubbing"],
+    summary="Pause an active or queued dubbing task while keeping checkpoints",
+    responses={
+        200: {"description": "The task was paused."},
+        404: {"model": ErrorResponse, "description": "The task was not found."},
+        409: {"model": ErrorResponse, "description": "The task has already finished."},
+    },
+)
+def pause_dubbing_task(
+    task_id: Annotated[
+        UUID,
+        PathParameter(description="The task_id to pause."),
+    ],
+) -> TaskStatus:
     identifier = str(task_id)
-    if (settings.outputs_dir / f"{identifier}.mp4").is_file():
-        raise HTTPException(status_code=409, detail="The dubbing task has already completed.")
-    source = settings.uploads_dir / f"{identifier}.mp4"
-    if not source.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail="The uploaded video is no longer available to retry. Upload it again.",
-        )
     record = task_store.get_task(identifier)
-    previous_status = record.get("status", "FAILURE") if record else "FAILURE"
-    previous_stage = record.get("stage", "failed") if record else "failed"
-    previous_error = record.get("error") if record else None
-    if record is None:
-        task_store.create_task(identifier, source.name, source.stat().st_size)
-    else:
-        task_store.update_task(identifier, status="PENDING", stage="queued", error=None)
+    source = settings.uploads_dir / f"{identifier}.mp4"
+    output = settings.outputs_dir / f"{identifier}.mp4"
+    if output.is_file() or (
+        record is not None and record.get("status") in {"SUCCESS", "FAILURE", "REVOKED"}
+    ):
+        raise HTTPException(status_code=409, detail="The dubbing task has already finished.")
+    if record is None and not source.is_file():
+        raise HTTPException(status_code=404, detail="Task not found.")
+    celery_id = (record or {}).get("celery_task_id", identifier)
     try:
-        dub_video.apply_async(args=[identifier], task_id=identifier, retry=False)
-    except Exception as exc:
-        logger.exception("Could not requeue task %s", identifier)
-        task_store.update_task(
-            identifier,
-            status=previous_status,
-            stage=previous_stage,
-            error=previous_error,
-        )
-        raise HTTPException(status_code=503, detail="The Redis queue is not available.") from exc
-    return TaskCreated(
-        task_id=identifier, status="PENDING", status_url=f"/api/v1/dubbing/tasks/{identifier}"
-    )
+        celery_app.control.revoke(celery_id)
+    except Exception:
+        logger.warning("Could not revoke queued task %s during pause", identifier, exc_info=True)
+    if record is None:
+        record = task_store.create_task(identifier, source.name, source.stat().st_size)
+    updated = task_store.update_task(identifier, status="PAUSED", stage="paused", error=None)
+    progress = int((updated or record).get("progress", 0))
+    return TaskStatus(task_id=identifier, status="PAUSED", progress=progress, stage="paused")
+
+
+@app.post(
+    "/api/v1/dubbing/tasks/{task_id}/resume",
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["Dubbing"],
+    summary="Resume a paused dubbing task from its saved checkpoints",
+    responses={
+        202: {"description": "The task was requeued to resume."},
+        404: {"model": ErrorResponse, "description": "The uploaded video is no longer available."},
+        409: {"model": ErrorResponse, "description": "The task is already finished."},
+        503: {"model": ErrorResponse, "description": "The Redis queue is not available."},
+    },
+)
+def resume_dubbing_task(
+    task_id: Annotated[
+        UUID,
+        PathParameter(description="The task_id to resume."),
+    ],
+) -> TaskCreated:
+    return _requeue_task(str(task_id))
+
+
+@app.delete(
+    "/api/v1/dubbing/tasks/{task_id}",
+    tags=["Dubbing"],
+    summary="Delete a dubbing task and all of its local files",
+    responses={
+        200: {"description": "The task and its files were deleted."},
+        404: {"model": ErrorResponse, "description": "The task was not found."},
+    },
+)
+def delete_dubbing_task(
+    task_id: Annotated[
+        UUID,
+        PathParameter(description="The task_id to delete."),
+    ],
+) -> TaskDeletedResponse:
+    identifier = str(task_id)
+    record = task_store.get_task(identifier)
+    source = settings.uploads_dir / f"{identifier}.mp4"
+    work_dir = settings.temp_dir / identifier
+    output = settings.outputs_dir / f"{identifier}.mp4"
+    if record is None and not any(path.exists() for path in (source, work_dir, output)):
+        raise HTTPException(status_code=404, detail="Task not found.")
+    celery_id = (record or {}).get("celery_task_id", identifier)
+    try:
+        celery_app.control.revoke(celery_id)
+    except Exception:
+        logger.warning("Could not revoke task %s during delete", identifier, exc_info=True)
+    task_store.delete_task(identifier)
+    source.unlink(missing_ok=True)
+    output.unlink(missing_ok=True)
+    shutil.rmtree(work_dir, ignore_errors=True)
+    return TaskDeletedResponse(task_id=identifier, deleted=True)
 
 
 @app.get(
@@ -460,8 +587,10 @@ def get_dubbing_task(
     ],
 ) -> TaskStatus:
     identifier = str(task_id)
+    record = task_store.get_task(identifier)
+    celery_id = (record or {}).get("celery_task_id", identifier)
     try:
-        result = celery_app.AsyncResult(identifier)
+        result = celery_app.AsyncResult(celery_id)
         task_state = result.state
         info = result.info
     except Exception as exc:
@@ -470,6 +599,9 @@ def get_dubbing_task(
             status_code=503, detail="The Redis result backend is not available."
         ) from exc
     metadata = info if isinstance(info, dict) else {}
+    if (record is not None and record.get("status") == "PAUSED") or task_state == "PAUSED":
+        progress = int(record.get("progress", 0)) if record else int(metadata.get("progress", 0))
+        return TaskStatus(task_id=identifier, status="PAUSED", progress=progress, stage="paused")
     if task_state == "PENDING" and not any(
         path.exists()
         for path in (

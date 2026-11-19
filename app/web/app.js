@@ -8,11 +8,12 @@ const translations = {
     reconnecting: "Menyambung ulang…",
     offline: "Terputus",
     heroEyebrow: "CPU • Offline • Lokal",
-    heroTitle: "Ubah video menjadi dubbing Indonesia.",
+    heroTitleLead: "Ubah video menjadi",
+    heroTitleAccent: "dubbing Indonesia.",
     heroText:
       "Unggah MP4, lalu pantau setiap tahap secara langsung. Semua proses berjalan di komputer ini tanpa mengirim file ke internet.",
     heroPoint1: "Video panjang hingga beberapa jam",
-    heroPoint2: "Progres real-time lewat SSE",
+    heroPoint2: "Pembaruan progres otomatis real-time",
     heroPoint3: "Putar dan unduh hasil langsung",
     dropTitle: "Tarik video ke sini",
     dropHint: "atau pilih file dari komputer",
@@ -31,9 +32,19 @@ const translations = {
     tasksSubtitle: "{count} task tersimpan • progres otomatis.",
     filterAll: "Semua",
     filterActive: "Aktif",
+    filterPaused: "Dijeda",
     filterDone: "Selesai",
     filterFailed: "Gagal",
     searchPlaceholder: "Cari nama file…",
+    colFileTask: "File / Task",
+    colSizeUpload: "Ukuran & Unggah",
+    colStages: "Tahap Pipeline",
+    colStatusProgress: "Status & Progres",
+    colActions: "Aksi",
+    showingTasks: "Menampilkan {from} sampai {to} dari {total} task",
+    rowsPerPage: "Baris per halaman:",
+    prevPage: "Halaman sebelumnya",
+    nextPage: "Halaman berikutnya",
     emptyTitle: "Belum ada video",
     emptyText: "Unggah MP4 pertama untuk memulai dubbing.",
     emptyFilterTitle: "Tidak ada task di filter ini",
@@ -43,10 +54,23 @@ const translations = {
     footerLocal: "Diproses lokal di perangkat ini.",
     footerApi: "Buka dokumentasi API",
     playerEyebrow: "Hasil dubbing",
-    download: "Unduh video",
+    download: "Unduh",
+    downloadVideo: "Unduh video",
     play: "Putar",
     copyId: "Salin ID",
     copied: "ID task disalin.",
+    pause: "Jeda",
+    pausing: "Menjeda…",
+    pauseQueued: "Task dijeda. Checkpoint tersimpan dan bisa dilanjutkan kapan saja.",
+    pauseFailed: "Tidak bisa menjeda task.",
+    resume: "Lanjutkan",
+    resuming: "Melanjutkan…",
+    resumeQueued: "Task dilanjutkan dari checkpoint terakhir.",
+    resumeFailed: "Tidak bisa melanjutkan task.",
+    deleteTask: "Hapus",
+    deleting: "Menghapus…",
+    deleteSuccess: "Task dan file terkait berhasil dihapus.",
+    deleteFailed: "Tidak bisa menghapus task.",
     retry: "Coba lagi",
     retrying: "Mengulang…",
     retryQueued: "Task dimasukkan ulang ke antrean, melanjutkan dari checkpoint.",
@@ -57,6 +81,7 @@ const translations = {
     statusQueued: "Menunggu",
     statusStarted: "Memulai",
     statusProcessing: "Diproses",
+    statusPaused: "Dijeda",
     statusSuccess: "Selesai",
     statusFailure: "Gagal",
     statusRevoked: "Dibatalkan",
@@ -65,8 +90,7 @@ const translations = {
     stageTranslate: "Terjemah",
     stageSynthesize: "Sintesis",
     stageMerge: "Gabung",
-    metaUploaded: "diunggah {time}",
-    staleBadge: "tidak ada update",
+    staleBadge: "• tidak ada update",
     staleHint:
       "Worker mungkin berhenti atau sedang memproses bagian yang panjang. Cek make status dan make logs-worker.",
     uploadPending: "Menunggu",
@@ -86,6 +110,8 @@ const translations = {
     rangeWarning: "Video ini melebihi batas durasi {hours} jam.",
     sizeMb: "{value} MB",
     sizeGb: "{value} GB",
+    refresh: "Muat ulang",
+    refreshQueue: "Muat ulang antrean",
   },
   en: {
     tagline: "Local dubbing studio",
@@ -94,11 +120,12 @@ const translations = {
     reconnecting: "Reconnecting…",
     offline: "Offline",
     heroEyebrow: "CPU • Offline • Local",
-    heroTitle: "Turn videos into Indonesian dubs.",
+    heroTitleLead: "Turn videos into",
+    heroTitleAccent: "Indonesian dubs.",
     heroText:
       "Upload an MP4 and watch every stage live. Everything runs on this computer and no file leaves your machine.",
     heroPoint1: "Long videos up to several hours",
-    heroPoint2: "Real-time progress over SSE",
+    heroPoint2: "Real-time automatic progress updates",
     heroPoint3: "Play and download results instantly",
     dropTitle: "Drop a video here",
     dropHint: "or choose a file from your computer",
@@ -117,9 +144,19 @@ const translations = {
     tasksSubtitle: "{count} saved tasks • progress updates automatically.",
     filterAll: "All",
     filterActive: "Active",
+    filterPaused: "Paused",
     filterDone: "Completed",
     filterFailed: "Failed",
     searchPlaceholder: "Search filenames…",
+    colFileTask: "File / Task",
+    colSizeUpload: "Size & Upload",
+    colStages: "Pipeline Stages",
+    colStatusProgress: "Status & Progress",
+    colActions: "Actions",
+    showingTasks: "Showing {from} to {to} of {total} tasks",
+    rowsPerPage: "Rows per page:",
+    prevPage: "Previous page",
+    nextPage: "Next page",
     emptyTitle: "No videos yet",
     emptyText: "Upload your first MP4 to start dubbing.",
     emptyFilterTitle: "Nothing in this filter",
@@ -129,10 +166,23 @@ const translations = {
     footerLocal: "Processed locally on this device.",
     footerApi: "Open the API docs",
     playerEyebrow: "Dubbing result",
-    download: "Download video",
+    download: "Download",
+    downloadVideo: "Download video",
     play: "Play",
     copyId: "Copy ID",
     copied: "Task ID copied.",
+    pause: "Pause",
+    pausing: "Pausing…",
+    pauseQueued: "Task paused. Checkpoints are saved so you can resume anytime.",
+    pauseFailed: "Could not pause the task.",
+    resume: "Resume",
+    resuming: "Resuming…",
+    resumeQueued: "Task requeued to resume from its saved checkpoint.",
+    resumeFailed: "Could not resume the task.",
+    deleteTask: "Delete",
+    deleting: "Deleting…",
+    deleteSuccess: "Task and associated files deleted.",
+    deleteFailed: "Could not delete the task.",
     retry: "Retry",
     retrying: "Retrying…",
     retryQueued: "Task requeued and will resume from its checkpoint.",
@@ -143,6 +193,7 @@ const translations = {
     statusQueued: "Waiting",
     statusStarted: "Starting",
     statusProcessing: "Processing",
+    statusPaused: "Paused",
     statusSuccess: "Completed",
     statusFailure: "Failed",
     statusRevoked: "Cancelled",
@@ -151,8 +202,7 @@ const translations = {
     stageTranslate: "Translate",
     stageSynthesize: "Synthesize",
     stageMerge: "Merge",
-    metaUploaded: "uploaded {time}",
-    staleBadge: "no updates",
+    staleBadge: "• no updates",
     staleHint:
       "The worker may have stopped or is processing a long section. Check make status and make logs-worker.",
     uploadPending: "Waiting",
@@ -171,6 +221,8 @@ const translations = {
     rangeWarning: "This video exceeds the {hours} hour duration limit.",
     sizeMb: "{value} MB",
     sizeGb: "{value} GB",
+    refresh: "Refresh",
+    refreshQueue: "Refresh queue",
   },
 };
 
@@ -186,15 +238,16 @@ const STATUS_LABELS = {
   PENDING: "statusQueued",
   STARTED: "statusStarted",
   PROGRESS: "statusProcessing",
+  PAUSED: "statusPaused",
   SUCCESS: "statusSuccess",
   FAILURE: "statusFailure",
   REVOKED: "statusRevoked",
 };
 
-const TERMINAL_STATUSES = new Set(["SUCCESS", "FAILURE", "REVOKED"]);
 const FAILED_STATUSES = new Set(["FAILURE", "REVOKED"]);
 const ACTIVE_STATUSES = new Set(["PENDING", "STARTED", "PROGRESS"]);
 const STALE_AFTER_MS = 120000;
+const PAGE_SIZES = new Set([5, 10, 25]);
 
 const state = {
   lang: "id",
@@ -203,7 +256,11 @@ const state = {
   configLoaded: false,
   filter: "all",
   search: "",
+  page: 1,
+  pageSize: 5,
   connected: false,
+  refreshInFlight: false,
+  eventSource: null,
   uploads: new Map(),
   uploadOrder: [],
   draining: false,
@@ -214,15 +271,23 @@ const cardNodes = new Map();
 const $ = (selector) => document.querySelector(selector);
 
 const els = {
-  connection: $("#connection"),
-  connectionLabel: $("#connection-label"),
+  langDropdownBtn: $("#lang-dropdown-btn"),
+  langDropdownMenu: $("#lang-dropdown-menu"),
+  queueRefreshBtn: $("#queue-refresh-btn"),
   themeToggle: $("#theme-toggle"),
   dropzone: $("#upload-form"),
   fileInput: $("#file-input"),
   browseButton: $("#browse-button"),
   uploadLimit: $("#upload-limit"),
   uploadQueue: $("#upload-queue"),
+  tableWrap: $("#table-wrap"),
   taskList: $("#task-list"),
+  tableFooter: $("#table-footer"),
+  paginationInfo: $("#pagination-info"),
+  paginationControls: $("#pagination-controls"),
+  pageSizeTrigger: $("#page-size-trigger"),
+  pageSizeMenu: $("#page-size-menu"),
+  pageSizeCurrent: $("#page-size-current"),
   empty: $("#empty-state"),
   emptyTitle: $("#empty-title"),
   emptyText: $("#empty-text"),
@@ -329,6 +394,9 @@ function pillClass(task) {
   if (task.status === "SUCCESS") {
     return "pill done";
   }
+  if (task.status === "PAUSED") {
+    return "pill paused";
+  }
   if (FAILED_STATUSES.has(task.status)) {
     return "pill failed";
   }
@@ -347,6 +415,13 @@ function stageClass(task, index) {
   if (task.status === "PENDING") {
     return "stage";
   }
+  if (task.status === "PAUSED") {
+    if (percent >= stage.max) {
+      return "stage is-done";
+    }
+    const previousDone = index === 0 || percent >= STAGES[index - 1].max;
+    return previousDone ? "stage is-paused" : "stage";
+  }
   if (FAILED_STATUSES.has(task.status)) {
     if (percent >= stage.max) {
       return "stage is-done";
@@ -364,10 +439,9 @@ function stageClass(task, index) {
 function icon(name) {
   const paths = {
     video:
-      '<rect x="3" y="5" width="18" height="14" rx="3"></rect><path d="m10 10 5 3-5 3v-6Z"></path>',
-    check: '<path d="m5 12 4 4L19 6"></path>',
+      '<path d="M15 10l4.553-2.276A1 1 0 0 1 21 8.618v6.764a1 1 0 0 1-1.447.894L15 14M5 18h8a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2Z"></path>',
     alert: '<path d="M12 8v5"></path><path d="M12 17h.01"></path><circle cx="12" cy="12" r="9"></circle>',
-    upload: '<path d="M12 16V4M7 9l5-5 5 5"></path><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"></path>',
+    upload: '<path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-8-4-4m0 0L8 8m4-4v12"></path>',
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.video}</svg>`;
 }
@@ -392,6 +466,9 @@ function setLanguage(language) {
   for (const element of document.querySelectorAll("[data-i18n-placeholder]")) {
     element.placeholder = t(element.dataset.i18nPlaceholder);
   }
+  for (const code of document.querySelectorAll("[data-lang-code]")) {
+    code.classList.toggle("is-active", code.dataset.langCode === state.lang);
+  }
   for (const button of document.querySelectorAll("[data-lang]")) {
     button.classList.toggle("is-active", button.dataset.lang === state.lang);
     button.setAttribute("aria-pressed", String(button.dataset.lang === state.lang));
@@ -401,11 +478,20 @@ function setLanguage(language) {
     t(document.documentElement.dataset.theme === "dark" ? "switchToLight" : "switchToDark"),
   );
   els.playerClose.setAttribute("aria-label", t("close"));
+  if (els.playerDownload) {
+    els.playerDownload.textContent = t("downloadVideo");
+  }
   updateUploadLimit();
-  updateConnectionLabel();
   renderStats();
   renderTasks();
   renderUploads();
+}
+
+function loadPreferences() {
+  const storedPageSize = Number.parseInt(String(storageGet("mydubber:page_size") ?? ""), 10);
+  if (PAGE_SIZES.has(storedPageSize)) {
+    state.pageSize = storedPageSize;
+  }
 }
 
 function updateUploadLimit() {
@@ -417,17 +503,6 @@ function updateUploadLimit() {
     mb: formatNumber(state.config.max_upload_mb, 0),
     hours: formatNumber(state.config.max_media_hours, 1),
   });
-}
-
-function setConnection(status) {
-  state.connected = status === "live";
-  els.connection.dataset.state = status;
-  updateConnectionLabel();
-}
-
-function updateConnectionLabel() {
-  const status = els.connection.dataset.state || "connecting";
-  els.connectionLabel.textContent = t(status);
 }
 
 function showToast(message, tone = "info", timeout = 4200) {
@@ -661,6 +736,9 @@ function taskIsVisible(task) {
   if (state.filter === "active") {
     return ACTIVE_STATUSES.has(task.status);
   }
+  if (state.filter === "paused") {
+    return task.status === "PAUSED";
+  }
   if (state.filter === "done") {
     return task.status === "SUCCESS";
   }
@@ -693,113 +771,103 @@ function renderStats() {
   els.tasksSubtitle.textContent = t("tasksSubtitle", { count: state.tasks.length });
 }
 
-function buildTaskCard(task) {
-  const card = document.createElement("article");
-  card.className = "task-card";
-  card.setAttribute("role", "listitem");
+function buildTaskCard() {
+  const row = document.createElement("tr");
+  row.className = "task-row";
 
-  const main = document.createElement("div");
-  main.className = "task-main";
-
+  // Column 1: File / Task (filename + pipeline stages)
+  const fileCell = document.createElement("td");
+  const fileWrap = document.createElement("div");
+  fileWrap.className = "task-file-cell";
   const iconWrap = document.createElement("span");
   iconWrap.className = "task-icon";
   iconWrap.innerHTML = icon("video");
-
-  const info = document.createElement("div");
-  info.className = "task-info";
+  const fileMeta = document.createElement("div");
+  fileMeta.className = "task-file-meta";
   const nameRow = document.createElement("div");
   nameRow.className = "task-name-row";
-  const name = document.createElement("h3");
+  const name = document.createElement("span");
   name.className = "task-name";
+  const stale = document.createElement("span");
+  stale.className = "stale-badge";
+  stale.hidden = true;
+  nameRow.append(name, stale);
+  const stages = document.createElement("div");
+  stages.className = "stage-row";
+  const error = document.createElement("p");
+  error.className = "task-error";
+  error.hidden = true;
+  fileMeta.append(nameRow, stages, error);
+  fileWrap.append(iconWrap, fileMeta);
+  fileCell.append(fileWrap);
+
+  // Column 2: Size & Upload
+  const sizeCell = document.createElement("td");
+  sizeCell.className = "whitespace-nowrap";
+  const sizeText = document.createElement("div");
+  sizeText.className = "task-size";
+  const uploadedText = document.createElement("div");
+  uploadedText.className = "task-uploaded";
+  sizeCell.append(sizeText, uploadedText);
+
+  // Column 3: Status & Progress
+  const statusCell = document.createElement("td");
+  const statusBox = document.createElement("div");
+  statusBox.className = "status-cell";
+  const statusTop = document.createElement("div");
+  statusTop.className = "status-cell-top";
   const pill = document.createElement("span");
   pill.className = "pill";
-  nameRow.append(name, pill);
-
-  const meta = document.createElement("p");
-  meta.className = "task-meta";
-
-  const progressRow = document.createElement("div");
-  progressRow.className = "progress-row";
+  const progressValue = document.createElement("span");
+  progressValue.className = "progress-value";
+  statusTop.append(pill, progressValue);
   const track = document.createElement("div");
   track.className = "progress-track";
   const fill = document.createElement("span");
   track.append(fill);
-  const progressValue = document.createElement("span");
-  progressValue.className = "progress-value";
-  progressRow.append(track, progressValue);
+  statusBox.append(statusTop, track);
+  statusCell.append(statusBox);
 
-  const stages = document.createElement("div");
-  stages.className = "stage-row";
-
-  const error = document.createElement("p");
-  error.className = "task-error";
-  error.hidden = true;
-
-  info.append(nameRow, meta, progressRow, stages, error);
-
+  // Column 4: Actions
+  const actionsCell = document.createElement("td");
+  actionsCell.className = "text-right";
   const actions = document.createElement("div");
   actions.className = "task-actions";
+  actionsCell.append(actions);
 
-  main.append(iconWrap, info, actions);
-  card.append(main);
-  card._parts = {
+  row.append(fileCell, sizeCell, statusCell, actionsCell);
+  row._parts = {
     name,
-    pill,
-    meta,
-    fill,
-    progressValue,
+    stale,
     stages,
     error,
+    sizeText,
+    uploadedText,
+    pill,
+    progressValue,
+    fill,
     actions,
   };
-  return card;
+  return row;
 }
 
-function updateTaskCard(card, task) {
-  card._task = task;
-  card.dataset.status = task.status;
-  const parts = card._parts;
+function updateTaskCard(row, task) {
+  row._task = task;
+  row.dataset.status = task.status;
+  const parts = row._parts;
+
   parts.name.textContent = task.filename;
   parts.name.title = task.filename;
-  parts.pill.className = pillClass(task);
-  parts.pill.textContent = t(statusKey(task));
 
-  const metaBits = [
-    formatSize(task.size_bytes),
-    t("metaUploaded", { time: timeAgo(task.created_at) }),
-    task.task_id.slice(0, 8),
-  ];
-  parts.meta.replaceChildren();
-  metaBits.forEach((bit, index) => {
-    if (index > 0) {
-      const separator = document.createElement("span");
-      separator.textContent = "·";
-      separator.setAttribute("aria-hidden", "true");
-      parts.meta.append(separator);
-    }
-    const span = document.createElement("span");
-    span.textContent = bit;
-    parts.meta.append(span);
-  });
   if (isStale(task)) {
-    const stale = document.createElement("span");
-    stale.className = "stale-badge";
-    stale.textContent = t("staleBadge");
-    stale.title = t("staleHint");
-    parts.meta.append(stale);
+    parts.stale.hidden = false;
+    parts.stale.textContent = t("staleBadge");
+    parts.stale.title = t("staleHint");
+  } else {
+    parts.stale.hidden = true;
+    parts.stale.textContent = "";
+    parts.stale.removeAttribute("title");
   }
-
-  const percent = percentFor(task);
-  parts.fill.style.width = `${percent}%`;
-  parts.progressValue.textContent = `${percent}%`;
-
-  parts.stages.replaceChildren();
-  STAGES.forEach((stage, index) => {
-    const chip = document.createElement("span");
-    chip.className = stageClass(task, index);
-    chip.textContent = t(stage.key);
-    parts.stages.append(chip);
-  });
 
   if (task.error && FAILED_STATUSES.has(task.status)) {
     parts.error.hidden = false;
@@ -812,73 +880,208 @@ function updateTaskCard(card, task) {
     parts.error.textContent = "";
   }
 
-  renderTaskActions(parts.actions, task, percent);
+  parts.sizeText.textContent = formatSize(task.size_bytes);
+  parts.uploadedText.textContent = timeAgo(task.created_at);
+
+  parts.stages.replaceChildren();
+  STAGES.forEach((stage, index) => {
+    const chip = document.createElement("span");
+    chip.className = stageClass(task, index);
+    chip.textContent = t(stage.key);
+    parts.stages.append(chip);
+  });
+
+  const percent = percentFor(task);
+  parts.pill.className = pillClass(task);
+  parts.pill.textContent = t(statusKey(task));
+  parts.progressValue.textContent = `${percent}%`;
+  parts.fill.style.width = `${percent}%`;
+
+  renderTaskActions(parts.actions, task);
 }
 
-function renderTaskActions(container, task, percent) {
+function renderTaskActions(container, task) {
   container.replaceChildren();
-  if (ACTIVE_STATUSES.has(task.status)) {
-    const value = document.createElement("span");
-    value.className = "task-percent";
-    value.textContent = `${percent}%`;
-    container.append(value);
-  }
-  const copy = document.createElement("button");
-  copy.type = "button";
-  copy.className = "button ghost small";
-  copy.dataset.action = "copy";
-  copy.textContent = t("copyId");
-  container.append(copy);
 
-  if (task.status === "SUCCESS" && task.download_url) {
+  if (ACTIVE_STATUSES.has(task.status)) {
+    const pause = document.createElement("button");
+    pause.type = "button";
+    pause.className = "button subtle-outline xs";
+    pause.dataset.action = "pause";
+    pause.textContent = t("pause");
+    container.append(pause);
+    if (isStale(task)) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "button amber-outline xs";
+      retry.dataset.action = "retry";
+      retry.textContent = t("retry");
+      container.append(retry);
+    }
+  } else if (task.status === "PAUSED") {
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.className = "button primary xs";
+    resume.dataset.action = "resume";
+    resume.textContent = t("resume");
+    container.append(resume);
+  } else if (task.status === "SUCCESS" && task.download_url) {
     const play = document.createElement("button");
     play.type = "button";
-    play.className = "button small";
+    play.className = "button play-btn xs";
     play.dataset.action = "play";
     play.textContent = t("play");
     const download = document.createElement("a");
-    download.className = "button primary small";
+    download.className = "button primary xs";
     download.href = task.download_url;
     download.download = task.filename || "";
     download.textContent = t("download");
     container.append(play, download);
-  } else if (FAILED_STATUSES.has(task.status) || isStale(task)) {
+  } else if (FAILED_STATUSES.has(task.status)) {
     const retry = document.createElement("button");
     retry.type = "button";
-    retry.className = "button primary small";
+    retry.className = "button amber-outline xs";
     retry.dataset.action = "retry";
     retry.textContent = t("retry");
     container.append(retry);
   }
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "button danger-ghost xs";
+  remove.dataset.action = "delete";
+  remove.textContent = t("deleteTask");
+  container.append(remove);
+}
+
+function buildPageNumbers(currentPage, totalPages) {
+  if (totalPages <= 5) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+  const pages = new Set([1, totalPages, currentPage - 1, currentPage, currentPage + 1]);
+  const sorted = Array.from(pages)
+    .filter((page) => page >= 1 && page <= totalPages)
+    .sort((a, b) => a - b);
+  const items = [];
+  for (let index = 0; index < sorted.length; index += 1) {
+    if (index > 0 && sorted[index] - sorted[index - 1] > 1) {
+      items.push("...");
+    }
+    items.push(sorted[index]);
+  }
+  return items;
+}
+
+function renderPagination(total, totalPages, startIndex, visibleCount) {
+  if (!els.tableFooter) {
+    return;
+  }
+  els.tableFooter.hidden = total === 0;
+  if (total === 0) {
+    return;
+  }
+  const from = startIndex + 1;
+  const to = startIndex + visibleCount;
+  if (els.paginationInfo) {
+    els.paginationInfo.textContent = t("showingTasks", { from, to, total });
+  }
+  if (els.pageSizeCurrent) {
+    els.pageSizeCurrent.textContent = String(state.pageSize);
+  }
+  for (const button of document.querySelectorAll("[data-page-size]")) {
+    const active = Number(button.dataset.pageSize) === state.pageSize;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  if (!els.paginationControls) {
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+
+  const prev = document.createElement("button");
+  prev.type = "button";
+  prev.className = "page-btn";
+  prev.dataset.page = String(state.page - 1);
+  prev.disabled = state.page <= 1;
+  prev.title = t("prevPage");
+  prev.setAttribute("aria-label", t("prevPage"));
+  prev.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 19l-7-7 7-7"></path></svg>';
+  fragment.append(prev);
+
+  for (const item of buildPageNumbers(state.page, totalPages)) {
+    if (item === "...") {
+      const gap = document.createElement("span");
+      gap.className = "page-ellipsis";
+      gap.textContent = "…";
+      fragment.append(gap);
+      continue;
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "page-btn";
+    if (item === state.page) {
+      button.classList.add("is-active");
+    }
+    button.dataset.page = String(item);
+    button.textContent = String(item);
+    button.setAttribute("aria-current", item === state.page ? "page" : "false");
+    fragment.append(button);
+  }
+
+  const next = document.createElement("button");
+  next.type = "button";
+  next.className = "page-btn";
+  next.dataset.page = String(state.page + 1);
+  next.disabled = state.page >= totalPages;
+  next.title = t("nextPage");
+  next.setAttribute("aria-label", t("nextPage"));
+  next.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"></path></svg>';
+  fragment.append(next);
+
+  els.paginationControls.replaceChildren(fragment);
 }
 
 function renderTasks() {
-  const visible = state.tasks.filter(taskIsVisible);
+  const filtered = state.tasks.filter(taskIsVisible);
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+  if (state.page > totalPages) {
+    state.page = totalPages;
+  }
+  if (state.page < 1) {
+    state.page = 1;
+  }
+  const startIndex = (state.page - 1) * state.pageSize;
+  const visible = filtered.slice(startIndex, startIndex + state.pageSize);
+
   const ids = new Set();
   for (const task of visible) {
     ids.add(task.task_id);
-    let card = cardNodes.get(task.task_id);
-    if (!card) {
-      card = buildTaskCard(task);
-      cardNodes.set(task.task_id, card);
+    let row = cardNodes.get(task.task_id);
+    if (!row) {
+      row = buildTaskCard();
+      cardNodes.set(task.task_id, row);
     }
-    updateTaskCard(card, task);
-    els.taskList.append(card);
+    updateTaskCard(row, task);
+    els.taskList.append(row);
   }
-  for (const [id, card] of cardNodes) {
+  for (const [id, row] of cardNodes) {
     if (!ids.has(id)) {
-      card.remove();
+      row.remove();
       cardNodes.delete(id);
     }
   }
-  renderEmpty(visible.length);
+  renderEmpty(total);
+  renderPagination(total, totalPages, startIndex, visible.length);
 }
 
 function renderEmpty(visibleCount) {
   const hasTasks = state.tasks.length > 0;
   const show = visibleCount === 0;
   els.empty.hidden = !show;
-  els.taskList.hidden = show;
+  if (els.tableWrap) {
+    els.tableWrap.hidden = show;
+  }
   if (!show) {
     return;
   }
@@ -900,8 +1103,12 @@ function renderAll() {
 }
 
 async function refreshTasks() {
+  if (state.refreshInFlight) {
+    return;
+  }
+  state.refreshInFlight = true;
   try {
-    const response = await fetch("/api/v1/dubbing/tasks?limit=50", {
+    const response = await fetch("/api/v1/dubbing/tasks?limit=200", {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -913,35 +1120,40 @@ async function refreshTasks() {
       renderAll();
     }
   } catch {
-    /* The SSE connection indicator already reports connectivity. */
+    /* Network error will be retried on next poll or event. */
+  } finally {
+    state.refreshInFlight = false;
   }
 }
 
 function connectEvents() {
-  setConnection("connecting");
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
   const source = new EventSource("/api/v1/dubbing/events");
-  source.addEventListener("open", () => {
-    setConnection("connecting");
-  });
+  state.eventSource = source;
   source.addEventListener("tasks", (event) => {
+    if (source !== state.eventSource) {
+      return;
+    }
     try {
       const payload = JSON.parse(event.data);
       if (Array.isArray(payload.tasks)) {
         state.tasks = payload.tasks;
-        setConnection("live");
         renderAll();
       }
     } catch {
       /* Ignore malformed events; the next snapshot will replace them. */
     }
   });
-  source.addEventListener("ping", () => {
-    if (els.connection.dataset.state !== "live") {
-      setConnection("live");
-    }
-  });
   source.addEventListener("error", () => {
-    setConnection(document.visibilityState === "hidden" ? "connecting" : "reconnecting");
+    if (source !== state.eventSource) {
+      return;
+    }
+    if (state.tasks.length === 0) {
+      void refreshTasks();
+    }
   });
 }
 
@@ -1005,34 +1217,85 @@ async function copyTaskId(taskId) {
   showToast(t("copied"), "success", 2200);
 }
 
-async function retryTask(taskId, button) {
+async function taskControlRequest(url, method, button, pendingKey, successKey, failureKey) {
+  const originalLabel = button ? button.textContent : "";
   if (button) {
     button.disabled = true;
-    button.textContent = t("retrying");
+    button.textContent = t(pendingKey);
   }
   try {
-    const response = await fetch(`/api/v1/dubbing/tasks/${encodeURIComponent(taskId)}/retry`, {
-      method: "POST",
+    const response = await fetch(url, {
+      method,
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      const detail = payload && typeof payload.detail === "string" ? payload.detail : t("retryFailed");
+      const detail = payload && typeof payload.detail === "string" ? payload.detail : t(failureKey);
       showToast(detail, "error", 5500);
       if (button) {
         button.disabled = false;
-        button.textContent = t("retry");
+        button.textContent = originalLabel;
       }
-      return;
+      return false;
     }
-    showToast(t("retryQueued"), "success");
+    showToast(t(successKey), "success");
     await refreshTasks();
+    return true;
   } catch {
     showToast(t("uploadNetwork"), "error", 5500);
     if (button) {
       button.disabled = false;
-      button.textContent = t("retry");
+      button.textContent = originalLabel;
     }
+    return false;
+  }
+}
+
+function retryTask(taskId, button) {
+  return taskControlRequest(
+    `/api/v1/dubbing/tasks/${encodeURIComponent(taskId)}/retry`,
+    "POST",
+    button,
+    "retrying",
+    "retryQueued",
+    "retryFailed",
+  );
+}
+
+function pauseTask(taskId, button) {
+  return taskControlRequest(
+    `/api/v1/dubbing/tasks/${encodeURIComponent(taskId)}/pause`,
+    "POST",
+    button,
+    "pausing",
+    "pauseQueued",
+    "pauseFailed",
+  );
+}
+
+function resumeTask(taskId, button) {
+  return taskControlRequest(
+    `/api/v1/dubbing/tasks/${encodeURIComponent(taskId)}/resume`,
+    "POST",
+    button,
+    "resuming",
+    "resumeQueued",
+    "resumeFailed",
+  );
+}
+
+async function deleteTask(taskId, button) {
+  const ok = await taskControlRequest(
+    `/api/v1/dubbing/tasks/${encodeURIComponent(taskId)}`,
+    "DELETE",
+    button,
+    "deleting",
+    "deleteSuccess",
+    "deleteFailed",
+  );
+  if (ok) {
+    state.tasks = state.tasks.filter((item) => item.task_id !== taskId);
+    renderAll();
   }
 }
 
@@ -1073,8 +1336,49 @@ function bindEvents() {
     addFiles(event.dataTransfer.files);
   });
 
+  const dropdownPairs = [
+    [els.langDropdownBtn, els.langDropdownMenu],
+    [els.pageSizeTrigger, els.pageSizeMenu],
+  ].filter(([trigger, menu]) => trigger && menu);
+
+  const closeAllDropdowns = (exceptMenu = null) => {
+    for (const [trigger, menu] of dropdownPairs) {
+      if (menu === exceptMenu) {
+        continue;
+      }
+      menu.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+    }
+  };
+
+  for (const [trigger, menu] of dropdownPairs) {
+    trigger.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const willOpen = menu.hidden;
+      closeAllDropdowns(menu);
+      menu.hidden = !willOpen;
+      trigger.setAttribute("aria-expanded", String(willOpen));
+    });
+    menu.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+  }
+
+  document.addEventListener("click", () => {
+    closeAllDropdowns();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeAllDropdowns();
+    }
+  });
+
   for (const button of document.querySelectorAll("[data-lang]")) {
-    button.addEventListener("click", () => setLanguage(button.dataset.lang));
+    button.addEventListener("click", () => {
+      setLanguage(button.dataset.lang);
+      closeAllDropdowns();
+    });
   }
   els.themeToggle.addEventListener("click", () => {
     const current = document.documentElement.dataset.theme;
@@ -1084,6 +1388,7 @@ function bindEvents() {
   for (const button of document.querySelectorAll("[data-filter]")) {
     button.addEventListener("click", () => {
       state.filter = button.dataset.filter;
+      state.page = 1;
       for (const other of document.querySelectorAll("[data-filter]")) {
         other.classList.toggle("is-active", other === button);
       }
@@ -1092,16 +1397,45 @@ function bindEvents() {
   }
   els.searchInput.addEventListener("input", () => {
     state.search = els.searchInput.value;
+    state.page = 1;
     renderTasks();
   });
+
+  for (const button of document.querySelectorAll("[data-page-size]")) {
+    button.addEventListener("click", () => {
+      const size = Number(button.dataset.pageSize);
+      closeAllDropdowns();
+      if (!PAGE_SIZES.has(size) || size === state.pageSize) {
+        return;
+      }
+      state.pageSize = size;
+      state.page = 1;
+      storageSet("mydubber:page_size", String(size));
+      renderTasks();
+    });
+  }
+
+  if (els.paginationControls) {
+    els.paginationControls.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-page]");
+      if (!button || button.disabled) {
+        return;
+      }
+      const nextPage = Number(button.dataset.page);
+      if (Number.isFinite(nextPage) && nextPage >= 1 && nextPage !== state.page) {
+        state.page = nextPage;
+        renderTasks();
+      }
+    });
+  }
 
   els.taskList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-action]");
     if (!button) {
       return;
     }
-    const card = button.closest(".task-card");
-    const task = card && card._task;
+    const row = button.closest(".task-row");
+    const task = row && row._task;
     if (!task) {
       return;
     }
@@ -1109,8 +1443,14 @@ function bindEvents() {
       void copyTaskId(task.task_id);
     } else if (button.dataset.action === "play") {
       openPlayer(task);
+    } else if (button.dataset.action === "pause") {
+      void pauseTask(task.task_id, button);
+    } else if (button.dataset.action === "resume") {
+      void resumeTask(task.task_id, button);
     } else if (button.dataset.action === "retry") {
       void retryTask(task.task_id, button);
+    } else if (button.dataset.action === "delete") {
+      void deleteTask(task.task_id, button);
     }
   });
 
@@ -1139,9 +1479,16 @@ function bindEvents() {
       void refreshTasks();
     }
   });
+
+  if (els.queueRefreshBtn) {
+    els.queueRefreshBtn.addEventListener("click", () => {
+      void refreshTasks();
+    });
+  }
 }
 
 function init() {
+  loadPreferences();
   const storedTheme = storageGet("mydubber:theme:meow");
   applyTheme(storedTheme === "dark" ? "dark" : "light");
 
@@ -1157,15 +1504,9 @@ function init() {
 
   bindEvents();
   renderAll();
-  setConnection("connecting");
   void loadConfig();
-  void refreshTasks();
   connectEvents();
-  window.setInterval(() => {
-    if (!state.connected) {
-      void refreshTasks();
-    }
-  }, 10000);
+  window.setInterval(refreshTasks, 15000);
   window.setInterval(renderTasks, 30000);
 }
 

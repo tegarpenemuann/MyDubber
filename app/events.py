@@ -103,8 +103,15 @@ class TaskEventBroker:
                 logger.warning("Could not read task metadata for SSE", exc_info=True)
             await asyncio.sleep(self._poll_interval)
 
-    async def stream(self, request: Request | None = None) -> AsyncIterator[str]:
+    async def stream(
+        self,
+        request: Request | None = None,
+        refresh_interval: float | None = None,
+    ) -> AsyncIterator[str]:
         queue = self.subscribe()
+        timeout = (
+            self._keepalive if refresh_interval is None else max(0.01, float(refresh_interval))
+        )
         try:
             payload = await asyncio.to_thread(snapshot_payload)
             yield format_sse("tasks", payload, retry=RETRY_MILLISECONDS)
@@ -112,9 +119,13 @@ class TaskEventBroker:
                 if request is not None and await request.is_disconnected():
                     break
                 try:
-                    payload = await asyncio.wait_for(queue.get(), timeout=self._keepalive)
+                    payload = await asyncio.wait_for(queue.get(), timeout=timeout)
                 except asyncio.TimeoutError:
-                    yield format_sse("ping", {"server_time": task_store.iso_timestamp()})
+                    if refresh_interval is not None:
+                        payload = await asyncio.to_thread(snapshot_payload)
+                        yield format_sse("tasks", payload)
+                    else:
+                        yield format_sse("ping", {"server_time": task_store.iso_timestamp()})
                 else:
                     yield format_sse("tasks", payload)
         finally:

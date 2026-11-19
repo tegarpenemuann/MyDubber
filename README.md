@@ -71,10 +71,10 @@ third-party service.
 
 - Upload an MP4 and get a task ID immediately. Processing continues in the background.
 - Handles long recordings: a two-hour video is supported, with a configurable limit of six hours.
-- Speech recognition with faster-whisper `base`, CPU, INT8.
+- Speech recognition with faster-whisper `base`, CPU, INT8. Silero VAD splits the audio into speech regions first, so applause, music, and silence are never dubbed over.
 - Local translation with Ollama and the `llama3.2` model, GPU disabled and batched for long transcripts.
 - Indonesian speech synthesis with Piper voice `id_ID-news_tts-medium`.
-- Speech is fitted to the original segment timing with Piper `length_scale`, so the dub stays in sync with the picture.
+- Translations get a character budget derived from each segment's duration, and speech is fitted to the original timing with Piper `length_scale`, so the dub stays in sync with the picture.
 - Checkpoints let an interrupted task resume without repeating transcription and finished translation batches.
 - The video stream is copied with FFmpeg (`-c:v copy`), so it is not re-encoded.
 - Progress updates by milestone, a downloadable result, and HTTP Range support for video players.
@@ -520,6 +520,13 @@ The table below covers every application setting:
 | `MYDUBBER_TRANSLATION_BATCH_SEGMENTS` | `8` | Maximum segments per Ollama request. |
 | `MYDUBBER_TRANSLATION_RETRIES` | `3` | Attempts per translation request before the task fails. |
 | `MYDUBBER_PROGRESS_MIN_INTERVAL` | `5` | Minimum seconds between intra-stage progress updates. |
+| `MYDUBBER_TRANSCRIBE_CHUNK_SECONDS` | `600` | Length of each transcription chunk. Audio longer than this is transcribed chunk by chunk, with a checkpoint written after every chunk. |
+| `MYDUBBER_TRANSCRIBE_CHUNK_OVERLAP_SECONDS` | `2` | Overlap between chunks so words at boundaries are not cut off. |
+| `MYDUBBER_STALE_TASK_TIMEOUT` | `1800` | Seconds without progress before an abandoned task is marked failed when the API or worker restarts. |
+| `MYDUBBER_DUB_MIN_LENGTH_SCALE` | `0.5` | Fastest Piper speed used to fit speech into a segment slot; lower is faster. |
+| `MYDUBBER_DUB_EMERGENCY_MIN_LENGTH_SCALE` | `0.25` | Emergency speed when normal `length_scale` still overflows the slot; prevents truncated words. |
+| `MYDUBBER_DUB_MAX_LENGTH_SCALE` | `1.5` | Slowest Piper speed used to fill a segment slot. Not applied when a segment is far longer than its speech. |
+| `MYDUBBER_DUB_MAX_GAP_SECONDS` | `0.5` | Gaps between segments up to this length are filled with speech instead of silence. |
 | `MYDUBBER_TASK_VISIBILITY_TIMEOUT` | `43200` | Redis broker visibility timeout. Must exceed the longest task. |
 | `MYDUBBER_FFMPEG_BINARY` | auto | Override the FFmpeg executable path. |
 | `MYDUBBER_FFPROBE_BINARY` | auto | Override the FFprobe executable path. |
@@ -661,10 +668,13 @@ its own model directory, outside this repository.
 | Celery fails on Windows | The default pool is not supported. | Use `--pool=solo` as shown above. |
 | First run is very slow | Models are being loaded for the first time. | Wait. Later runs reuse the loaded models. |
 | Output does not play in some players | `-c:v copy` kept a codec the player does not support. | Use a standard H.264/AAC MP4. |
+| Dubbed speech is cut off or out of sync | The translation is longer than the original segment slot. | Ollama now receives a per-segment character budget and overlong lines are asked to shorten automatically. If `trimming` warnings remain, lower `MYDUBBER_DUB_MIN_LENGTH_SCALE` (e.g. `0.4`) or `MYDUBBER_DUB_EMERGENCY_MIN_LENGTH_SCALE` (e.g. `0.2`) and retry; delete the `translations.json` checkpoint to retranslate with the new budgets. |
 | `make: command not found` | GNU Make is not installed. | Follow the manual steps in [Quick start](#quick-start), or install Make (for example `choco install make`). |
 | `make up` says Docker is not ready | Docker Desktop is stopped or still starting. | Open Docker Desktop, wait until it is running, then run `make up` again. |
 | `make up` says port 8000 is in use | Another API or program owns the port. | Stop it, or run `make up PORT=8001` and open the new URL. |
 | `make up` warns that Ollama is not reachable | The external Ollama service is not running. | Start the Ollama app or run `ollama serve`; pull the model with `ollama pull llama3.2`. |
+| Upload returns `503` with "Ollama is not reachable" | The translator was not ready when the file was sent. | Start Ollama, run `ollama pull llama3.2`, check `make doctor`, then upload or retry again. |
+| Task fails at 30% with "Ollama is not reachable" | Ollama stopped during translation. | Start Ollama and click Retry; the transcript checkpoint is reused instead of transcribed again. |
 | `make stop` leaves a process | It was started manually, outside the Makefile. | Stop it in its original terminal, or use Task Manager / `taskkill`. |
 | A long task stays at 30% for a long time | Translation of a large transcript is CPU-heavy. | Wait, or lower `MYDUBBER_CPU_THREADS` contention by closing other programs. Check the worker log for per-batch warnings. |
 | A long task fails after a worker restart | The job was interrupted, not cancelled. | Restart Redis and the worker, then requeue the same task ID as described in [Long videos](#long-videos). |

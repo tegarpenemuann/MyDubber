@@ -60,6 +60,21 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("event: tasks", events[0])
         self.assertIn("event: ping", events[1])
 
+    async def test_stream_emits_periodic_tasks_when_refresh_interval_set(self):
+        with patch(
+            "app.events.task_store.snapshot",
+            return_value={"tasks": [{"task_id": "one"}], "active": 1},
+        ):
+            broker = TaskEventBroker(keepalive=5)
+            stream = broker.stream(FakeRequest(disconnect_after=2), refresh_interval=0.01)
+            events = []
+            async for event in stream:
+                events.append(event)
+        self.assertGreaterEqual(len(events), 3)
+        self.assertIn("event: tasks", events[0])
+        self.assertIn("event: tasks", events[1])
+        self.assertNotIn("event: ping", events[1])
+
     async def test_watcher_broadcasts_a_changed_snapshot(self):
         payload = {"tasks": [{"task_id": "one"}], "active": 1, "server_time": "now"}
         broker = TaskEventBroker(poll_interval=0.01, keepalive=5)

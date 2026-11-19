@@ -20,6 +20,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = {"PENDING", "STARTED", "PROGRESS"}
+PAUSED_STATUSES = {"PAUSED"}
 TERMINAL_STATUSES = {"SUCCESS", "FAILURE", "REVOKED"}
 HISTORY_LIMIT = 200
 PRUNE_INTERVAL_SECONDS = 300.0
@@ -104,6 +105,7 @@ def create_task(task_id: str, filename: str | None, size_bytes: int) -> dict:
     now = iso_timestamp()
     record = {
         "task_id": identifier,
+        "celery_task_id": identifier,
         "filename": clean_filename(filename, identifier),
         "size_bytes": max(0, int(size_bytes)),
         "created_at": now,
@@ -135,6 +137,7 @@ def update_task(task_id: str, **changes: object) -> dict | None:
         "stage",
         "download_url",
         "error",
+        "celery_task_id",
     }
     for key, value in changes.items():
         if key not in allowed:
@@ -223,6 +226,42 @@ def _has_local_artifacts(record: dict) -> bool:
     )
 
 
+def recover_stale_tasks(max_age_seconds: float | None = None) -> list[str]:
+    """Fail tasks whose worker stopped publishing updates.
+
+    Celery acknowledges tasks on receipt (``acks_late=False``), so a worker that
+    dies mid-job would otherwise leave the record active forever. Long jobs
+    publish progress/keep-alive updates, so a recent timestamp means the task is
+    genuinely still running. Recovered tasks keep their checkpoints and can be
+    retried from the last completed stage.
+    """
+    max_age = settings.stale_task_timeout if max_age_seconds is None else max_age_seconds
+    cutoff = time.time() - max_age
+    recovered: list[str] = []
+    for record in all_tasks():
+        if record.get("status") not in {"STARTED", "PROGRESS"}:
+            continue
+        if _timestamp(record) > cutoff:
+            continue
+        identifier = str(record.get("task_id", ""))
+        if not identifier:
+            continue
+        update_task(
+            identifier,
+            status="FAILURE",
+            stage="failed",
+            error=(
+                "The worker stopped responding while this task was running. "
+                "Retry it to resume from the last checkpoint."
+            ),
+            download_url=None,
+        )
+        recovered.append(identifier)
+    if recovered:
+        logger.warning("Recovered %d stale task(s): %s", len(recovered), ", ".join(recovered))
+    return recovered
+
+
 def prune_tasks(
     max_age_seconds: float | None = None,
     history_limit: int = HISTORY_LIMIT,
@@ -234,8 +273,8 @@ def prune_tasks(
     for record in all_tasks():
         identifier = record["task_id"]
         age = _timestamp(record)
-        if _is_active(record):
-            # A crashed worker leaves an active record behind. Keep it while the
+        if _is_active(record) or record.get("status") in PAUSED_STATUSES:
+            # A crashed worker or paused task keeps its record while the
             # upload or checkpoints still exist, otherwise drop it after expiry.
             if age >= cutoff or _has_local_artifacts(record):
                 continue

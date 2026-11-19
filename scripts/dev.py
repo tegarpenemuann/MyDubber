@@ -644,6 +644,18 @@ def check_ollama() -> None:
         print(f"Pull it with: ollama pull {model}")
 
 
+def wait_for_ollama(timeout: float = 30.0) -> bool:
+    """Give a starting Ollama app time to become reachable before uploads begin."""
+    deadline = time.monotonic() + timeout
+    while True:
+        reachable, names = ollama_models()
+        if reachable and model_available(ollama_model(), names):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(2.0)
+
+
 def up(port: int) -> int:
     python = venv_python()
     if python is None:
@@ -671,6 +683,7 @@ def up(port: int) -> int:
         return 1
     if not ensure_redis():
         return 1
+    wait_for_ollama()
 
     specs = process_specs(port)
     started: list[str] = []

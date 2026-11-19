@@ -125,3 +125,37 @@ class TaskStoreTests(unittest.TestCase):
         payload = task_store.snapshot()
         self.assertEqual(payload["active"], 1)
         self.assertEqual(len(payload["tasks"]), 2)
+
+    def test_prune_keeps_paused_tasks_with_artifacts_and_drops_orphaned_ones(self):
+        orphan = self._record(
+            status="PAUSED",
+            updated_at=(datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
+        )
+        resumable = self._record(
+            status="PAUSED",
+            updated_at=(datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
+        )
+        (self.settings.uploads_dir / f"{resumable['task_id']}.mp4").touch()
+        task_store.prune_tasks(max_age_seconds=60)
+        self.assertIsNone(task_store.get_task(orphan["task_id"]))
+        self.assertIsNotNone(task_store.get_task(resumable["task_id"]))
+
+    def test_recover_stale_tasks_fails_only_stalled_active_tasks(self):
+        old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+        stalled = self._record(status="PROGRESS", updated_at=old)
+        stalled_start = self._record(status="STARTED", updated_at=old)
+        fresh = self._record(status="PROGRESS")
+        queued = self._record(status="PENDING", updated_at=old)
+        paused = self._record(status="PAUSED", updated_at=old)
+
+        recovered = task_store.recover_stale_tasks(max_age_seconds=60)
+
+        self.assertEqual(set(recovered), {stalled["task_id"], stalled_start["task_id"]})
+        for identifier in recovered:
+            record = task_store.get_task(identifier)
+            self.assertEqual(record["status"], "FAILURE")
+            self.assertEqual(record["stage"], "failed")
+            self.assertIn("resume", record["error"])
+        self.assertEqual(task_store.get_task(fresh["task_id"])["status"], "PROGRESS")
+        self.assertEqual(task_store.get_task(queued["task_id"])["status"], "PENDING")
+        self.assertEqual(task_store.get_task(paused["task_id"])["status"], "PAUSED")

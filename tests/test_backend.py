@@ -7,7 +7,7 @@ import unittest
 import wave
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 from uuid import uuid4
 
 import httpx
@@ -17,20 +17,30 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.main import HealthCheckAccessFilter, app
 from app.tasks import (
+    SAMPLE_RATE,
     ProgressReporter,
     assert_media_limits,
+    check_ollama_available,
     cleanup_stale_artifacts,
+    decode_audio,
     dub_video,
     ffmpeg,
+    load_partial_transcript,
+    load_segments,
     media_duration,
     parse_numbered_translation,
     piper_voice,
     probe_media,
+    render_speech,
     run_process,
+    speech_regions,
     synthesize,
     timeline_sample_rate,
     transcribe,
+    transcribe_chunks,
     translate_segments,
+    trim_edge_silence,
+    video_stream_duration,
     whisper_model,
     write_silence,
 )
@@ -92,6 +102,9 @@ class BackendTests(unittest.TestCase):
         self.store_patch = patch("app.task_store.settings", self.settings)
         self.store_patch.start()
         self.addCleanup(self.store_patch.stop)
+        self.ollama_patch = patch("app.main.check_ollama_available", return_value=(True, ""))
+        self.ollama_ready = self.ollama_patch.start()
+        self.addCleanup(self.ollama_patch.stop)
         self.client = TestClient(app)
 
     @patch("app.main.dub_video.apply_async")
@@ -128,6 +141,19 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(list(self.settings.uploads_dir.iterdir()), [])
         self.assertEqual(list(self.settings.tasks_dir.iterdir()), [])
+
+    @patch("app.main.dub_video.apply_async")
+    def test_upload_rejected_when_ollama_is_unavailable(self, enqueue):
+        self.ollama_ready.return_value = (False, "Ollama is not reachable. Start the Ollama app.")
+
+        response = self.client.post(
+            "/api/v1/dubbing/tasks", files={"file": ("video.mp4", b"video")}
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("Ollama", response.json()["detail"])
+        enqueue.assert_not_called()
+        self.assertEqual(list(self.settings.uploads_dir.iterdir()), [])
 
     def test_dashboard_and_upload_config_are_served(self):
         page = self.client.get("/")
@@ -169,11 +195,72 @@ class BackendTests(unittest.TestCase):
         response = self.client.post(f"/api/v1/dubbing/tasks/{task_id}/retry")
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()["status"], "PENDING")
-        enqueue.assert_called_once_with(args=[task_id], task_id=task_id, retry=False)
+        enqueue.assert_called_once_with(args=[task_id], task_id=ANY, retry=False)
+        self.assertNotEqual(enqueue.call_args.kwargs["task_id"], task_id)
         record = task_store.get_task(task_id)
+        self.assertEqual(record["celery_task_id"], enqueue.call_args.kwargs["task_id"])
         self.assertEqual(record["status"], "PENDING")
         self.assertEqual(record["stage"], "queued")
         self.assertIsNone(record["error"])
+
+    @patch("app.main.celery_app.control.revoke")
+    @patch("app.main.dub_video.apply_async")
+    def test_pause_resume_and_delete_endpoints(self, enqueue, revoke):
+        from app import task_store
+
+        missing_id = str(uuid4())
+        self.assertEqual(
+            self.client.post(f"/api/v1/dubbing/tasks/{missing_id}/pause").status_code, 404
+        )
+        self.assertEqual(self.client.delete(f"/api/v1/dubbing/tasks/{missing_id}").status_code, 404)
+
+        created = self.client.post("/api/v1/dubbing/tasks", files={"file": ("clip.mp4", b"video")})
+        self.assertEqual(created.status_code, 202)
+        task_id = created.json()["task_id"]
+        enqueue.reset_mock()
+
+        task_store.update_task(task_id, status="PROGRESS", progress=35, stage="translating")
+        paused = self.client.post(f"/api/v1/dubbing/tasks/{task_id}/pause")
+        self.assertEqual(paused.status_code, 200)
+        self.assertEqual(paused.json()["status"], "PAUSED")
+        self.assertEqual(paused.json()["progress"], 35)
+        self.assertEqual(paused.json()["stage"], "paused")
+        revoke.assert_called_with(task_id)
+
+        with patch(
+            "app.main.celery_app.AsyncResult",
+            return_value=SimpleNamespace(state="REVOKED", info=None),
+        ):
+            polled = self.client.get(f"/api/v1/dubbing/tasks/{task_id}")
+        self.assertEqual(polled.status_code, 200)
+        self.assertEqual(polled.json()["status"], "PAUSED")
+        self.assertEqual(polled.json()["progress"], 35)
+
+        resumed = self.client.post(f"/api/v1/dubbing/tasks/{task_id}/resume")
+        self.assertEqual(resumed.status_code, 202)
+        self.assertEqual(resumed.json()["status"], "PENDING")
+        enqueue.assert_called_once_with(args=[task_id], task_id=ANY, retry=False)
+        resumed_celery_id = enqueue.call_args.kwargs["task_id"]
+        self.assertNotEqual(resumed_celery_id, task_id)
+        self.assertEqual(task_store.get_task(task_id)["celery_task_id"], resumed_celery_id)
+
+        work_dir = self.settings.temp_dir / task_id
+        work_dir.mkdir(parents=True, exist_ok=True)
+        (work_dir / "segments.json").write_text("{}", encoding="utf-8")
+        output = self.settings.outputs_dir / f"{task_id}.mp4"
+        output.write_bytes(b"done")
+        self.assertEqual(
+            self.client.post(f"/api/v1/dubbing/tasks/{task_id}/pause").status_code, 409
+        )
+
+        deleted = self.client.delete(f"/api/v1/dubbing/tasks/{task_id}")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(deleted.json()["deleted"])
+        revoke.assert_called_with(resumed_celery_id)
+        self.assertIsNone(task_store.get_task(task_id))
+        self.assertFalse((self.settings.uploads_dir / f"{task_id}.mp4").exists())
+        self.assertFalse(work_dir.exists())
+        self.assertFalse(output.exists())
 
     @patch("app.main.celery_app.AsyncResult")
     def test_polling_states(self, async_result):
@@ -292,6 +379,29 @@ class BackendTests(unittest.TestCase):
         self.assertFalse(client.post.call_args.kwargs["json"]["stream"])
         self.assertEqual(client.post.call_args.kwargs["json"]["options"]["num_gpu"], 0)
 
+    @patch("app.tasks.httpx.Client")
+    def test_translation_system_carries_a_duration_based_character_budget(self, factory):
+        client = Mock()
+        client.post.return_value = ollama_response("Halo")
+        factory.return_value.__enter__.return_value = client
+        translated = translate_segments([{"start": 0, "end": 2, "text": "Hello"}])
+        system = client.post.call_args.kwargs["json"]["system"]
+        self.assertIn("at or below 28 characters", system)
+        self.assertEqual(translated[0]["text"], "Halo")
+
+    @patch("app.tasks.httpx.Client")
+    def test_overlong_translation_is_shortened_before_synthesis(self, factory):
+        client = Mock()
+        client.post.side_effect = [
+            ollama_response("Ini adalah terjemahan yang jauh terlalu panjang untuk durasinya"),
+            ollama_response("Halo"),
+        ]
+        factory.return_value.__enter__.return_value = client
+        translated = translate_segments([{"start": 0, "end": 1, "text": "Hello"}])
+        self.assertEqual(translated[0]["text"], "Halo")
+        self.assertEqual(client.post.call_count, 2)
+        self.assertIn("Current translation:", client.post.call_args.kwargs["json"]["prompt"])
+
     @patch("app.tasks.run_process", return_value='{"streams": []}')
     def test_media_tools_only_allow_local_protocols(self, process):
         ffmpeg("-i", "source.mp4", "-i", "dubbing.mp3", "result.mp4")
@@ -395,21 +505,91 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(timeline.getnframes(), 3 * 22050)
             self.assertEqual(timeline.readframes(22050), b"\x00\x00" * 22050)
             self.assertEqual(timeline.readframes(1), (1000).to_bytes(2, "little", signed=True))
-        # 2 seconds do not fit into a 1 second slot, so Piper resynthesizes faster.
+        # 2 seconds do not fit into a 1 second slot, so Piper resynthesizes at 0.5x.
         self.assertEqual(voice.length_scales[0], 1.0)
-        self.assertAlmostEqual(voice.length_scales[1], 0.7)
+        self.assertAlmostEqual(voice.length_scales[1], 0.5)
+        # No word is cut off: the whole sentence is still audible in the slot.
+        with wave.open(str(output), "rb") as timeline:
+            timeline.setpos(22050)
+            frames = np.frombuffer(timeline.readframes(22050), dtype="<i2")
+        self.assertTrue((frames == 1000).all())
 
-    def test_short_speech_is_padded_with_silence(self):
+    def test_short_speech_is_stretched_to_fill_the_slot(self):
         voice = FakeVoice(seconds=0.4)
         work_dir = Path(self.directory.name)
         with patch("app.tasks.piper_voice", return_value=voice):
             output = synthesize([{"start": 0, "end": 1, "text": "Halo"}], 1, work_dir)
-        self.assertEqual(voice.length_scales, [1.0])
+        self.assertEqual(voice.length_scales, [1.0, 1.5])
         with wave.open(str(output), "rb") as timeline:
             self.assertEqual(timeline.getnframes(), 22050)
             frames = np.frombuffer(timeline.readframes(22050), dtype="<i2")
         self.assertTrue((frames[:10] == 1000).all())
         self.assertTrue((frames[-10:] == 0).all())
+
+    def test_small_gap_between_segments_is_filled_with_speech(self):
+        voice = FakeVoice(seconds=1.0)
+        work_dir = Path(self.directory.name)
+        segments = [
+            {"start": 0, "end": 1, "text": "Satu"},
+            {"start": 1.4, "end": 2, "text": "Dua"},
+        ]
+        with patch("app.tasks.piper_voice", return_value=voice):
+            output = synthesize(segments, 2, work_dir)
+        with wave.open(str(output), "rb") as timeline:
+            frames = np.frombuffer(timeline.readframes(2 * 22050), dtype="<i2")
+        self.assertEqual(frames[int(1.2 * 22050)], 1000)
+        self.assertEqual(voice.length_scales, [1.0, 1.4, 1.0, 0.6])
+
+    def test_edge_silence_from_synthesizer_is_trimmed(self):
+        samples = np.concatenate(
+            [
+                np.zeros(441, dtype=np.int16),
+                np.full(22050, 1000, dtype=np.int16),
+                np.zeros(441, dtype=np.int16),
+            ]
+        )
+        trimmed = trim_edge_silence(samples, 22050)
+        self.assertEqual(len(trimmed), 22050)
+
+    def test_render_speech_keeps_all_words_when_slot_is_very_short(self):
+        voice = FakeVoice(seconds=1.0)
+        with patch("app.tasks.settings.dub_min_length_scale", 0.2):
+            samples = render_speech(voice, "Halo", 0.25, 22050)
+        self.assertEqual(len(samples), round(0.25 * 22050))
+        self.assertTrue((samples == 1000).all())
+
+    def test_emergency_length_scale_fits_overlong_speech_without_trimming(self):
+        voice = FakeVoice(seconds=4.0)
+        with (
+            patch("app.tasks.settings.dub_min_length_scale", 0.5),
+            patch("app.tasks.settings.dub_emergency_min_length_scale", 0.25),
+        ):
+            samples = render_speech(voice, "Halo", 1.0, 22050)
+        self.assertEqual(voice.length_scales, [1.0, 0.5, 0.25])
+        self.assertEqual(len(samples), 22050)
+        self.assertTrue((samples == 1000).all())
+
+    def test_oversized_segment_slot_keeps_a_natural_speaking_rate(self):
+        voice = FakeVoice(seconds=3.0)
+        work_dir = Path(self.directory.name) / "long-slot"
+        work_dir.mkdir()
+        with patch("app.tasks.piper_voice", return_value=voice):
+            output = synthesize([{"start": 0, "end": 22, "text": "Halo"}], 22, work_dir)
+        self.assertEqual(voice.length_scales, [1.0])
+        with wave.open(str(output), "rb") as timeline:
+            self.assertEqual(timeline.getnframes(), 22 * 22050)
+
+    def test_synthesis_reports_total_time_lost_to_trimming(self):
+        voice = FakeVoice(seconds=10.0)
+        stats = {"trimmed_seconds": 0.0}
+        with (
+            patch("app.tasks.settings.dub_min_length_scale", 0.5),
+            patch("app.tasks.settings.dub_emergency_min_length_scale", 0.2),
+            self.assertLogs("app.tasks", level="WARNING") as captured,
+        ):
+            render_speech(voice, "Halo", 1.0, 22050, stats)
+        self.assertGreater(stats["trimmed_seconds"], 0)
+        self.assertTrue(any("trimming" in message for message in captured.output))
 
     def test_timeline_can_span_hours_without_buffering(self):
         voice = FakeVoice(seconds=0.2, sample_rate=100)
@@ -482,6 +662,25 @@ class BackendTests(unittest.TestCase):
                 dub_video.run(task_id)
         self.assertFalse(source.exists())
         self.assertFalse((self.settings.temp_dir / task_id).exists())
+
+    def test_pipeline_failure_keeps_the_real_error_in_task_metadata(self):
+        from app import task_store
+
+        task_id = str(uuid4())
+        source = self.settings.uploads_dir / f"{task_id}.mp4"
+        source.write_bytes(b"video")
+        task_store.create_task(task_id, "clip.mp4", 5)
+
+        with (
+            patch("app.tasks.settings", self.settings),
+            patch("app.tasks.probe_media", side_effect=RuntimeError("Ollama is not reachable")),
+        ):
+            with self.assertRaises(RuntimeError):
+                dub_video.run(task_id)
+
+        record = task_store.get_task(task_id)
+        self.assertEqual(record["status"], "FAILURE")
+        self.assertEqual(record["error"], "Ollama is not reachable")
 
     def test_pipeline_reuses_transcript_and_translation_checkpoints(self):
         task_id = str(uuid4())
@@ -610,11 +809,22 @@ class BackendTests(unittest.TestCase):
         )
 
     def test_transcription_avoids_long_audio_drift(self):
-        segment = SimpleNamespace(start=0.0, end=1.0, text=" Hello ")
+        segment = SimpleNamespace(
+            start=0.0,
+            end=1.0,
+            text=" Hello ",
+            avg_logprob=-0.2,
+            no_speech_prob=0.1,
+            compression_ratio=1.4,
+        )
         engine = Mock()
         engine.transcribe.return_value = ([segment], None)
         updates = []
-        with patch("app.tasks.whisper_model", return_value=engine):
+        with (
+            patch("app.tasks.whisper_model", return_value=engine),
+            patch("app.tasks.decode_audio", return_value=np.zeros(32000, dtype=np.float32)),
+            patch("app.tasks.speech_regions", return_value=[(0, 16000)]),
+        ):
             transcript = transcribe(
                 Path("audio.wav"),
                 duration=2.0,
@@ -623,8 +833,225 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(transcript, [{"start": 0.0, "end": 1.0, "text": "Hello"}])
         options = engine.transcribe.call_args.kwargs
         self.assertFalse(options["condition_on_previous_text"])
-        self.assertTrue(options["vad_filter"])
+        self.assertFalse(options["vad_filter"])
         self.assertEqual(updates, [(19, "transcribing")])
+
+    def test_transcription_offsets_each_vad_region_and_keeps_gap_silent(self):
+        def region_segments(region):
+            if region == "first":
+                return ([SimpleNamespace(start=0.0, end=2.0, text="Pertama")], None)
+            return ([SimpleNamespace(start=0.0, end=1.0, text="Kedua")], None)
+
+        engine = Mock()
+        engine.transcribe.side_effect = lambda audio, **kwargs: region_segments(
+            "first" if len(audio) == 16000 else "second"
+        )
+        with (
+            patch("app.tasks.whisper_model", return_value=engine),
+            patch("app.tasks.decode_audio", return_value=np.zeros(100000, dtype=np.float32)),
+            patch("app.tasks.speech_regions", return_value=[(0, 16000), (60000, 80000)]),
+        ):
+            transcript = transcribe(Path("audio.wav"), duration=6.0)
+        self.assertEqual(
+            transcript,
+            [
+                {"start": 0.0, "end": 2.0, "text": "Pertama"},
+                {"start": 3.75, "end": 4.75, "text": "Kedua"},
+            ],
+        )
+        self.assertEqual(engine.transcribe.call_count, 2)
+        for call in engine.transcribe.call_args_list:
+            self.assertFalse(call.kwargs["vad_filter"])
+
+    def test_unreliable_transcription_segments_are_dropped(self):
+        from app.tasks import segment_is_reliable
+
+        good = SimpleNamespace(avg_logprob=-0.2, no_speech_prob=0.1, compression_ratio=1.4)
+        repetitive = SimpleNamespace(avg_logprob=-0.2, no_speech_prob=0.1, compression_ratio=3.0)
+        noisy = SimpleNamespace(avg_logprob=-1.4, no_speech_prob=0.9, compression_ratio=1.4)
+        self.assertTrue(segment_is_reliable(good))
+        self.assertFalse(segment_is_reliable(repetitive))
+        self.assertFalse(segment_is_reliable(noisy))
+
+    @unittest.skipUnless(
+        (
+            Path(__file__).resolve().parent.parent
+            / "Jensen-Huang-just-shrunk-a-supercomputer-into-a-laptop.mp4"
+        ).is_file(),
+        "Jensen sample video is not present in the project root.",
+    )
+    def test_jensen_video_keeps_the_applause_gap_silent(self):
+        """Regression: Silero must not let Whisper bridge the 40.7-47.3 s applause."""
+        video = (
+            Path(__file__).resolve().parent.parent
+            / "Jensen-Huang-just-shrunk-a-supercomputer-into-a-laptop.mp4"
+        )
+        audio = Path(self.directory.name) / "jensen.wav"
+        ffmpeg(
+            "-i",
+            str(video),
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            str(SAMPLE_RATE),
+            "-c:a",
+            "pcm_s16le",
+            str(audio),
+        )
+        samples = decode_audio(audio)
+        regions = speech_regions(samples)
+        self.assertTrue(regions)
+        for start, end in regions:
+            self.assertFalse(
+                start < 44 * SAMPLE_RATE < end,
+                f"VAD region {start / SAMPLE_RATE:.2f}-{end / SAMPLE_RATE:.2f} bridges applause",
+            )
+        segments = transcribe(audio, duration=len(samples) / SAMPLE_RATE)
+        self.assertTrue(segments)
+        for segment in segments:
+            self.assertFalse(
+                segment["start"] < 44.0 < segment["end"],
+                f"Dubbed segment bridges the applause gap: {segment}",
+            )
+
+    def test_ollama_preflight_detects_missing_service_and_model(self):
+        with patch("app.tasks.httpx.Client") as factory:
+            client = factory.return_value.__enter__.return_value
+            client.get.side_effect = httpx.ConnectError(
+                "offline", request=httpx.Request("GET", "http://127.0.0.1")
+            )
+            ready, message = check_ollama_available()
+            self.assertFalse(ready)
+            self.assertIn("not reachable", message)
+
+        with patch("app.tasks.httpx.Client") as factory:
+            client = factory.return_value.__enter__.return_value
+            client.get.return_value = httpx.Response(
+                200,
+                json={"models": [{"name": "other:latest"}]},
+                request=httpx.Request("GET", "http://127.0.0.1"),
+            )
+            ready, message = check_ollama_available()
+            self.assertFalse(ready)
+            self.assertIn("not installed", message)
+
+    def test_partial_transcript_checkpoint_is_not_treated_as_complete(self):
+        work_dir = Path(self.directory.name) / "work"
+        work_dir.mkdir()
+        checkpoint = work_dir / "segments.json"
+        checkpoint.write_text(
+            json.dumps(
+                {
+                    "duration": 1200.0,
+                    "processed_seconds": 600.0,
+                    "segments": [{"start": 1.0, "end": 2.0, "text": "Halo"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertIsNone(load_segments(checkpoint, 1200.0))
+        segments, processed = load_partial_transcript(checkpoint, 1200.0)
+        self.assertEqual(processed, 600.0)
+        self.assertEqual(len(segments), 1)
+
+    def test_chunked_transcription_resumes_and_drops_overlap_duplicates(self):
+        work_dir = Path(self.directory.name) / "work"
+        work_dir.mkdir()
+        checkpoint = work_dir / "segments.json"
+        checkpoint.write_text(
+            json.dumps(
+                {
+                    "duration": 1300.0,
+                    "processed_seconds": 600.0,
+                    "segments": [{"start": 1.0, "end": 2.0, "text": "awal"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        chunked = Settings(
+            storage_dir=Path(self.directory.name),
+            transcribe_chunk_seconds=600,
+            transcribe_chunk_overlap_seconds=2,
+        )
+        responses = [
+            [
+                {"start": 1.0, "end": 2.0, "text": "duplikat"},
+                {"start": 3.0, "end": 4.0, "text": "kedua"},
+            ],
+            [
+                {"start": 0.5, "end": 1.5, "text": "duplikat2"},
+                {"start": 4.0, "end": 5.0, "text": "ketiga"},
+            ],
+        ]
+
+        def fake_transcribe(path, duration=None, on_progress=None):
+            result = responses.pop(0)
+            if on_progress is not None:
+                on_progress(29, "transcribing")
+            return result
+
+        def fake_ffmpeg(*arguments):
+            Path(arguments[-1]).touch()
+
+        with (
+            patch("app.tasks.settings", chunked),
+            patch("app.tasks.ffmpeg", side_effect=fake_ffmpeg) as media,
+            patch("app.tasks.transcribe", side_effect=fake_transcribe),
+        ):
+            segments = transcribe_chunks(
+                Path("audio.wav"),
+                duration=1300.0,
+                checkpoint=checkpoint,
+                on_progress=lambda percent, stage: None,
+            )
+
+        self.assertEqual([item["text"] for item in segments], ["awal", "kedua", "ketiga"])
+        self.assertEqual([item["start"] for item in segments], [1.0, 601.0, 1202.0])
+        payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+        self.assertEqual(payload["processed_seconds"], 1300.0)
+        self.assertEqual(len(payload["segments"]), 3)
+        self.assertFalse((work_dir / "transcribe-chunk.wav").exists())
+        seeks = [call.args[call.args.index("-ss") + 1] for call in media.call_args_list]
+        self.assertEqual(seeks, ["598.000", "1198.000"])
+
+    def test_long_video_uses_chunked_transcription(self):
+        task_id = str(uuid4())
+        source = self.settings.uploads_dir / f"{task_id}.mp4"
+        source.write_bytes(b"video")
+        segments = [{"start": 0, "end": 1, "text": "Halo"}]
+        long_settings = Settings(
+            storage_dir=Path(self.directory.name),
+            max_upload_mb=1,
+            transcribe_chunk_seconds=60,
+        )
+
+        def fake_ffmpeg(*arguments):
+            Path(arguments[-1]).touch()
+
+        with (
+            patch("app.tasks.settings", long_settings),
+            patch(
+                "app.tasks.probe_media",
+                return_value={
+                    "format": {"duration": "120.0"},
+                    "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
+                },
+            ),
+            patch("app.tasks.ffmpeg", side_effect=fake_ffmpeg),
+            patch("app.tasks.transcribe_chunks", return_value=segments) as chunked,
+            patch("app.tasks.transcribe") as plain,
+            patch("app.tasks.translate_segments", return_value=segments),
+            patch("app.tasks.synthesize", return_value=Path(self.directory.name) / "timeline.wav"),
+            patch.object(dub_video, "update_state"),
+        ):
+            result = dub_video.run(task_id)
+
+        chunked.assert_called_once()
+        plain.assert_not_called()
+        self.assertEqual(result["progress"], 100)
 
     def test_media_duration_falls_back_to_stream_duration(self):
         with patch(
@@ -632,6 +1059,19 @@ class BackendTests(unittest.TestCase):
             return_value={"format": {"duration": "N/A"}, "streams": [{"duration": "120.5"}]},
         ):
             self.assertEqual(media_duration(Path("video.mp4")), 120.5)
+
+    def test_video_stream_duration_is_preferred_for_the_timeline(self):
+        media = {
+            "format": {"duration": "53.568"},
+            "streams": [
+                {"codec_type": "video", "duration": "53.517"},
+                {"codec_type": "audio", "duration": "53.568"},
+            ],
+        }
+        self.assertEqual(video_stream_duration(media), 53.517)
+        self.assertIsNone(
+            video_stream_duration({"streams": [{"codec_type": "audio", "duration": "10"}]})
+        )
 
     def test_media_timeout_follows_configuration(self):
         with (
@@ -766,7 +1206,7 @@ class BackendTests(unittest.TestCase):
             "offline", request=httpx.Request("POST", "http://localhost")
         )
         factory.return_value.__enter__.return_value = client
-        with self.assertRaisesRegex(ValueError, "failed after 3 attempts"):
+        with self.assertRaisesRegex(RuntimeError, "Ollama is not reachable"):
             translate_segments([{"start": 0, "end": 1, "text": "Hello"}])
         self.assertEqual(client.post.call_count, 3)
 
@@ -776,6 +1216,73 @@ class BackendTests(unittest.TestCase):
         self.assertGreater(celery_app.conf.broker_transport_options["visibility_timeout"], 3600)
         self.assertFalse(celery_app.conf.task_acks_late)
         self.assertIsNone(celery_app.conf.task_time_limit)
+
+    def test_pipeline_pause_preserves_checkpoints_and_delete_cleans_up(self):
+        from app import task_store
+
+        task_id = str(uuid4())
+        source = self.settings.uploads_dir / f"{task_id}.mp4"
+        source.write_bytes(b"video")
+        task_store.create_task(task_id, "clip.mp4", 5)
+
+        def fake_ffmpeg(*arguments):
+            Path(arguments[-1]).touch()
+
+        def pause_during_translate(segments, on_progress=None, checkpoint=None, duration=None):
+            task_store.update_task(task_id, status="PAUSED", progress=30, stage="paused")
+            if on_progress is not None:
+                on_progress(35, "translating")
+            return segments
+
+        with (
+            patch("app.tasks.settings", self.settings),
+            patch(
+                "app.tasks.probe_media",
+                return_value={
+                    "format": {"duration": "2.0"},
+                    "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
+                },
+            ),
+            patch("app.tasks.ffmpeg", side_effect=fake_ffmpeg),
+            patch(
+                "app.tasks.transcribe",
+                return_value=[{"start": 0, "end": 1, "text": "Halo"}],
+            ),
+            patch("app.tasks.translate_segments", side_effect=pause_during_translate),
+            patch.object(dub_video, "update_state"),
+        ):
+            paused_result = dub_video.run(task_id)
+
+        self.assertEqual(paused_result["status"], "PAUSED")
+        self.assertTrue(source.exists())
+        self.assertTrue((self.settings.temp_dir / task_id / "segments.json").exists())
+        self.assertEqual(task_store.get_task(task_id)["status"], "PAUSED")
+
+        def delete_during_translate(segments, on_progress=None, checkpoint=None, duration=None):
+            task_store.delete_task(task_id)
+            if on_progress is not None:
+                on_progress(40, "translating")
+            return segments
+
+        task_store.update_task(task_id, status="PENDING", stage="queued")
+        with (
+            patch("app.tasks.settings", self.settings),
+            patch(
+                "app.tasks.probe_media",
+                return_value={
+                    "format": {"duration": "2.0"},
+                    "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
+                },
+            ),
+            patch("app.tasks.translate_segments", side_effect=delete_during_translate),
+            patch.object(dub_video, "update_state"),
+        ):
+            deleted_result = dub_video.run(task_id)
+
+        self.assertEqual(deleted_result["status"], "REVOKED")
+        self.assertFalse(source.exists())
+        self.assertFalse((self.settings.temp_dir / task_id).exists())
+        self.assertIsNone(task_store.get_task(task_id))
 
 
 if __name__ == "__main__":

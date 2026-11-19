@@ -71,10 +71,10 @@ pihak ketiga.
 
 - Unggah MP4 dan langsung dapat `task_id`. Proses berjalan di latar belakang.
 - Mendukung rekaman panjang: video dua jam dapat diproses, dengan batas yang bisa diatur sampai enam jam.
-- Pengenalan ucapan dengan faster-whisper `base`, CPU, INT8.
+- Pengenalan ucapan dengan faster-whisper `base`, CPU, INT8. Silero VAD memotong audio menjadi region bicara lebih dulu, jadi tepuk tangan, musik, dan hening tidak pernah di-dubbing.
 - Penerjemahan lokal dengan Ollama dan model `llama3.2`, GPU dimatikan dan dibatch untuk transkrip panjang.
 - Sintesis suara Indonesia dengan voice Piper `id_ID-news_tts-medium`.
-- Ucapan disesuaikan dengan timing segmen asli memakai `length_scale` Piper, jadi dubbing tetap sinkron dengan gambar.
+- Terjemahan diberi batas karakter sesuai durasi tiap segmen, lalu ucapan disesuaikan dengan timing asli memakai `length_scale` Piper, jadi dubbing tetap sinkron dengan gambar.
 - Checkpoint membuat task yang terputus bisa dilanjutkan tanpa mengulang transkripsi dan batch terjemahan yang sudah selesai.
 - Video stream disalin dengan FFmpeg (`-c:v copy`), jadi tidak di-render ulang.
 - Progres per milestone, hasil bisa diunduh, dan dukungan HTTP Range untuk video player.
@@ -100,7 +100,7 @@ Proses **worker** mengambil pekerjaan itu dan menjalankan lima langkah:
 | 30–59% | `translating` | Ollama menerjemahkan segmen secara batch ke Bahasa Indonesia. |
 | 60% | `translated` | Setiap segmen sudah punya terjemahan Bahasa Indonesia. |
 | 60–79% | `synthesizing` | Piper mengucapkan setiap segmen dan timeline disusun pada sample rate voice. |
-| 80% | `synthesized` | Timeline dubbing sudah sama persis dengan durasi video. |
+| 80% | `synthesized` | Timeline dubbing mengikuti durasi video stream (bukan durasi kontainer) dan diisi hening sampai habis. |
 | 100% | `completed` | FFmpeg menggabungkan video asli dengan audio baru dan menerbitkan hasilnya. |
 
 Progres berbasis **milestone** dengan persentase di dalam tahap. Ini bukan
@@ -526,6 +526,13 @@ Tabel berikut menjelaskan semua pengaturan aplikasi:
 | `MYDUBBER_TRANSLATION_BATCH_SEGMENTS` | `8` | Maksimum segmen per request Ollama. |
 | `MYDUBBER_TRANSLATION_RETRIES` | `3` | Jumlah percobaan per request penerjemahan sebelum task gagal. |
 | `MYDUBBER_PROGRESS_MIN_INTERVAL` | `5` | Jarak minimum dalam detik antar pembaruan progres di dalam tahap. |
+| `MYDUBBER_TRANSCRIBE_CHUNK_SECONDS` | `600` | Durasi tiap potongan audio saat transkrip. Video lebih panjang dari ini diproses per potongan dan checkpoint-nya disimpan tiap potongan selesai. |
+| `MYDUBBER_TRANSCRIBE_CHUNK_OVERLAP_SECONDS` | `2` | Overlap antar potongan agar kata di batas potongan tidak terpotong. |
+| `MYDUBBER_STALE_TASK_TIMEOUT` | `1800` | Detik tanpa pembaruan sebelum task yang ditinggalkan worker ditandai gagal saat API/worker dimulai ulang. |
+| `MYDUBBER_DUB_MIN_LENGTH_SCALE` | `0.5` | Percepatan maksimal Piper agar suara muat di durasi segmen. Makin kecil makin cepat. |
+| `MYDUBBER_DUB_EMERGENCY_MIN_LENGTH_SCALE` | `0.25` | Percepatan darurat jika hasil `length_scale` biasa masih melebihi slot; mencegah kata terpotong. |
+| `MYDUBBER_DUB_MAX_LENGTH_SCALE` | `1.5` | Perlambatan maksimal Piper agar suara mengisi durasi segmen. Tidak dipakai untuk segmen yang jauh lebih panjang dari ucapannya. |
+| `MYDUBBER_DUB_MAX_GAP_SECONDS` | `0.5` | Jeda antar segmen yang masih diisi suara (diperpanjang sampai segmen berikutnya). |
 | `MYDUBBER_TASK_VISIBILITY_TIMEOUT` | `43200` | Visibility timeout broker Redis. Harus lebih besar dari task terlama. |
 | `MYDUBBER_FFMPEG_BINARY` | otomatis | Menimpa path executable FFmpeg. |
 | `MYDUBBER_FFPROBE_BINARY` | otomatis | Menimpa path executable FFprobe. |
@@ -666,10 +673,13 @@ folder model miliknya sendiri, di luar repository ini.
 | Celery gagal di Windows | Pool default tidak didukung. | Gunakan `--pool=solo` seperti contoh di atas. |
 | Run pertama sangat lambat | Model sedang dimuat untuk pertama kali. | Tunggu. Run berikutnya memakai model yang sudah dimuat. |
 | Output tidak bisa diputar di beberapa player | `-c:v copy` mempertahankan codec yang tidak didukung player tersebut. | Gunakan MP4 H.264/AAC standar. |
+| Suara terpotong atau tidak sinkron dengan video | Terjemahan lebih panjang dari durasi segmen asli. | Ollama kini diberi batas karakter per segmen dan hasil kepanjangan diminta memendek otomatis. Jika masih ada peringatan `trimming`, turunkan `MYDUBBER_DUB_MIN_LENGTH_SCALE` (mis. `0.4`) atau `MYDUBBER_DUB_EMERGENCY_MIN_LENGTH_SCALE` (mis. `0.2`) lalu retry; hapus checkpoint `translations.json` agar terjemahan diterjemahkan ulang dengan batas baru. |
 | `make: command not found` | GNU Make belum terpasang. | Ikuti langkah manual di [Mulai cepat](#mulai-cepat), atau pasang Make (misalnya `choco install make`). |
 | `make up` bilang Docker belum siap | Docker Desktop mati atau masih starting. | Buka Docker Desktop, tunggu sampai running, lalu jalankan `make up` lagi. |
 | `make up` bilang port 8000 dipakai | Ada API atau program lain di port itu. | Hentikan program tersebut, atau jalankan `make up PORT=8001` lalu buka URL baru. |
 | `make up` memperingatkan Ollama tidak bisa dihubungi | Service Ollama eksternal belum berjalan. | Buka aplikasi Ollama atau jalankan `ollama serve`; unduh model dengan `ollama pull llama3.2`. |
+| Upload mengembalikan `503` dengan pesan "Ollama is not reachable" | Penerjemah belum siap saat file dikirim. | Jalankan Ollama dan `ollama pull llama3.2`, cek `make doctor`, lalu upload/retry lagi. |
+| Task gagal di 30% dengan error "Ollama is not reachable" | Ollama mati saat tahap terjemahan. | Hidupkan Ollama lalu klik Retry; transkrip sudah tersimpan sehingga tidak diulang dari awal. |
 | `make stop` tidak menghentikan proses | Proses dijalankan manual, di luar Makefile. | Hentikan di terminal asalnya, atau lewat Task Manager / `taskkill`. |
 | Task panjang lama tertahan di 30% | Penerjemahan transkrip besar berat di CPU. | Tunggu, atau kurangi rebutan `MYDUBBER_CPU_THREADS` dengan menutup program lain. Periksa log worker untuk peringatan per batch. |
 | Task panjang gagal setelah worker restart | Pekerjaan terputus, bukan dibatalkan. | Jalankan ulang Redis dan worker, lalu masukkan ulang task ID yang sama seperti di [Video berdurasi panjang](#video-berdurasi-panjang). |
